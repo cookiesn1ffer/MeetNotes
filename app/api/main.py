@@ -14,7 +14,6 @@ Reads of stored corrections/glossary flow through the pipeline (`stt.transcribe`
 """
 
 import json
-import logging
 import os
 import tempfile
 import urllib.error
@@ -26,10 +25,8 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from app.config import get_elevenlabs_key
-from app.extract import extract
 from app.feedback import FeedbackStore
-from app.speakers import resolve
-from app.stt import transcribe
+from app.pipeline import run_pipeline
 
 DEFAULT_TEAM = "default"
 DEFAULT_DB = Path("data/meetnotes.db")
@@ -74,19 +71,6 @@ class TtsIn(BaseModel):
 
 def _parse_roster(csv: str) -> list[str]:
     return [n.strip() for n in csv.split(",") if n.strip()]
-
-
-class _StageLogCollector(logging.Handler):
-    """Captures `stage=…` log lines from the pipeline modules during a request."""
-
-    def __init__(self) -> None:
-        super().__init__(level=logging.INFO)
-        self.lines: list[str] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        msg = record.getMessage()
-        if "stage=" in msg:
-            self.lines.append(msg)
 
 
 def _resolve_voice_id(requested: str | None) -> str:
@@ -144,34 +128,22 @@ def create_app(store: FeedbackStore | None = None) -> FastAPI:
         fd, tmp = tempfile.mkstemp(suffix=suffix)
         os.close(fd)
         audio_path = Path(tmp)
-
-        collector = _StageLogCollector()
-        app_log = logging.getLogger("app")
-        prior_level = app_log.level
-        app_log.setLevel(logging.INFO)
-        app_log.addHandler(collector)
         try:
             audio_path.write_bytes(content)
-            utts = transcribe(audio_path, team_id=team_id, store=s)
-            # Build a roster from stored embeddings/clips and merge in roster names.
-            base = s.build_roster(team_id, {name: [] for name in roster_names})
-            resolved = resolve(utts, base)
-            result = extract(resolved, roster_names, team_id=team_id, store=s)
+            result = run_pipeline(audio_path, team_id, roster_names, s)
         finally:
-            app_log.removeHandler(collector)
-            app_log.setLevel(prior_level)
             audio_path.unlink(missing_ok=True)
 
         return {
-            "summary": result["summary"],
-            "notes": result["notes"],
-            "tasks": result["tasks"],
+            "summary": result.summary,
+            "notes": result.notes,
+            "tasks": result.tasks,
             "utterances": [
                 {"speaker": u.speaker, "start": u.start, "end": u.end, "text": u.text, "lang": u.lang}
-                for u in resolved
+                for u in result.utterances
             ],
-            "roster": roster_names,
-            "timings": collector.lines,
+            "roster": result.roster,
+            "timings": result.stage_logs,
         }
 
     # ------- TTS proxy

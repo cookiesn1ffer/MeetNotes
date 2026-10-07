@@ -29,15 +29,12 @@ import argparse
 import difflib
 import json
 import logging
-import time
 from collections.abc import Callable
 from pathlib import Path
 
-from app.extract import extract
 from app.feedback import FeedbackStore
 from app.models import Utterance
-from app.speakers import Roster, resolve
-from app.stt import transcribe
+from app.pipeline import run_pipeline
 
 log = logging.getLogger(__name__)
 
@@ -157,50 +154,29 @@ def run_clip(
     call: Callable | None = None,
     use_cache: bool = True,
 ) -> dict:
-    """Run the full pipeline on one clip; return a row of metric columns."""
+    """Run the full pipeline on one clip (via `run_pipeline`); return a metric row."""
     team_id = truth.get("team_id", "default")
     roster_names = truth.get("roster", [])
 
-    t_start = time.perf_counter()
-
-    t0 = time.perf_counter()
-    stt_kwargs = {"team_id": team_id, "store": store, "use_cache": use_cache}
-    if post is not None:
-        stt_kwargs["post"] = post
-    hyp_utts = transcribe(audio, **stt_kwargs)
-    stt_s = time.perf_counter() - t0
-
-    # Speaker resolution (fast; folded into end-to-end only).
-    base_roster = store.build_roster(team_id, {}) if store else Roster()
-    merged = {name: list(base_roster.enrollments.get(name, [])) for name in roster_names}
-    for name, paths in base_roster.enrollments.items():
-        merged.setdefault(name, []).extend(paths)
-    roster = Roster(merged, base_roster.embeddings)
-    resolved = resolve(hyp_utts, roster)
-
-    t0 = time.perf_counter()
-    ex_kwargs = {"team_id": team_id, "store": store}
-    if call is not None:
-        ex_kwargs["call"] = call
-    extracted = extract(resolved, roster_names, **ex_kwargs)
-    llm_s = time.perf_counter() - t0
-
-    total_s = time.perf_counter() - t_start
+    result = run_pipeline(
+        audio, team_id, roster_names, store,
+        post=post, call=call, use_cache=use_cache,
+    )
 
     truth_utts = _utterances_from_truth(truth)
     truth_transcript = truth.get("transcript", " ".join(u.text for u in truth_utts))
-    hyp_transcript = " ".join(u.text for u in hyp_utts)
+    hyp_transcript = " ".join(u.text for u in result.utterances)
 
     wer_pct = wer(truth_transcript, hyp_transcript) * 100
-    spk_pct = speaker_accuracy(resolved, truth_utts) * 100
-    precision, recall = task_metrics(extracted.get("tasks", []), truth.get("tasks", []))
+    spk_pct = speaker_accuracy(result.utterances, truth_utts) * 100
+    precision, recall = task_metrics(result.tasks, truth.get("tasks", []))
 
     return {
         "clip": audio.name,
         "duration (s)": float(truth.get("duration_s", 0.0)),
-        "time-to-notes (s)": total_s,
-        "STT time (s)": stt_s,
-        "LLM time (s)": llm_s,
+        "time-to-notes (s)": result.total_seconds,
+        "STT time (s)": result.stage_seconds.get("stt", 0.0),
+        "LLM time (s)": result.stage_seconds.get("extract", 0.0),
         "WER (%)": wer_pct,
         "speaker acc (%)": spk_pct,
         "task precision (%)": precision * 100,

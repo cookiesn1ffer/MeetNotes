@@ -115,12 +115,13 @@ def test_index_route_serves_html(client):
 
 def test_process_endpoint_runs_pipeline_and_returns_timings(client, monkeypatch):
     def fake_transcribe(audio, **kwargs):
-        # Prove the glossary wiring reached stt by checking kwargs.
-        assert kwargs.get("team_id") == "demo"
+        # Prove the glossary wiring reached stt via keyterms (not team_id anymore).
+        assert isinstance(kwargs.get("keyterms"), list)
         return [Utterance("speaker_0", 0.0, 2.0, "Kaushal, make a ppt", "hin")]
 
     def fake_extract(utterances, roster, **kwargs):
-        assert kwargs.get("team_id") == "demo"
+        assert isinstance(kwargs.get("glossary"), dict)
+        assert isinstance(kwargs.get("examples"), list)
         return {
             "summary": "ok",
             "notes": [],
@@ -136,8 +137,8 @@ def test_process_endpoint_runs_pipeline_and_returns_timings(client, monkeypatch)
             ],
         }
 
-    monkeypatch.setattr("app.api.main.transcribe", fake_transcribe)
-    monkeypatch.setattr("app.api.main.extract", fake_extract)
+    monkeypatch.setattr("app.pipeline.transcribe", fake_transcribe)
+    monkeypatch.setattr("app.pipeline.extract", fake_extract)
 
     r = client.post(
         "/process",
@@ -200,22 +201,20 @@ def test_tts_endpoint_voice_id_override(client, monkeypatch):
 
 
 def test_correction_persists_across_process_calls(client, monkeypatch):
-    """End-to-end PASS: process -> correct_task -> process again, correction is retrieved
-    as a few-shot example in the second extract call."""
+    """End-to-end PASS: process -> correct_task -> process again, the correction
+    reaches the second extract call as a top-3 few-shot example (via run_pipeline
+    -> pipeline_inputs -> retrieve_examples)."""
     seen_examples: list[list] = []
 
     def fake_transcribe(audio, **kwargs):
         return [Utterance("speaker_0", 0.0, 2.0, "Koshal please prep the ppt", "hin")]
 
     def fake_extract(utterances, roster, **kwargs):
-        store = kwargs.get("store")
-        transcript = " ".join(u.text for u in utterances)
-        examples = store.retrieve_examples(kwargs.get("team_id"), transcript, k=3) if store else []
-        seen_examples.append(examples)
+        seen_examples.append(kwargs.get("examples", []))
         return {"summary": "", "notes": [], "tasks": []}
 
-    monkeypatch.setattr("app.api.main.transcribe", fake_transcribe)
-    monkeypatch.setattr("app.api.main.extract", fake_extract)
+    monkeypatch.setattr("app.pipeline.transcribe", fake_transcribe)
+    monkeypatch.setattr("app.pipeline.extract", fake_extract)
 
     files = {"audio": ("c.wav", b"a", "audio/wav")}
     r1 = client.post("/process", data={"team_id": "demo", "roster": "Kaushal"}, files=files)

@@ -45,6 +45,16 @@
   `DEMO.md` (3-minute script: play clip -> per-person tasks -> correct task +
   speaker -> re-run and show the fix persists -> bench + TTS readout, with
   prep steps and fallbacks).
+- Prompt 10 — `app/pipeline.py` with `run_pipeline(audio, team_id, roster, store)
+  -> MeetingResult` as the single wiring point for STT (glossary -> keyterms),
+  speaker resolution, and extraction (glossary + top-3 TF-IDF few-shot examples
+  via `pipeline_inputs`). `/process` and `bench.run_clip` refactored to call it
+  (behavior-identical, +1 feedback_lookup log line). CLI entry point via
+  `app/__main__.py` + `app/cli.py`: `uv run python -m app process <audio>
+  --team T --roster "A,B,C" [--json]` prints per-person tasks + notes + stage
+  timings; `--json` emits the full MeetingResult; exits 1 with a one-line error
+  (no traceback) on missing file, missing API key, or network failure. Closes
+  loose ends "no CLI orchestrator" and "pipeline_inputs has no caller".
 
 ## In progress
 - (none)
@@ -52,5 +62,11 @@
 ## Next
 - (none scheduled — open to the next prompt)
 
+## Loose ends
+- CI has been committed but hasn't actually run on this repo yet — first push to
+  GitHub will exercise the Ubuntu + Windows matrix.
+- `eval/audio/` and `eval/truth/` are empty, so `bench/results.md` and the
+  README table are template-only.
+
 ## Failing tests
-- none (97/97 pass; ruff clean)
+- none (108/108 pass; ruff clean)
