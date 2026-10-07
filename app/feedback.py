@@ -8,20 +8,21 @@ Two SQLite tables scoped by `team_id`:
     glossary(team_id, term, kind, created_at)
         kind labels the term's category (person, product, acronym, ...).
 
-Retrieval uses a tiny bag-of-words TF-IDF (no vector DB). Speaker corrections contribute
-enrollment clips that `build_roster()` adds to the base roster; `app.speakers.resolve`
-averages the per-name clip embeddings on the next run.
+Example retrieval uses scikit-learn's `TfidfVectorizer` + `cosine_similarity` over the
+`context` (source_quote) of past task corrections. No vector DB. Speaker corrections
+contribute enrollment clips that `build_roster()` adds to the base roster;
+`app.speakers.resolve` averages the per-name clip embeddings on the next run.
 """
 
 import json
 import logging
-import math
-import re
 import sqlite3
 import time
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 from app.speakers import Roster
 
@@ -53,37 +54,10 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-# ---------------------------------------------------------------- TF-IDF (stdlib only)
-
-
-def _tokenize(text: str) -> list[str]:
-    # \w matches Devanagari under Python's default UNICODE flag.
-    return re.findall(r"\w+", text.lower())
-
-
-def _idf(docs_tokens: list[list[str]]) -> dict[str, float]:
-    df: Counter[str] = Counter()
-    for toks in docs_tokens:
-        df.update(set(toks))
-    n = len(docs_tokens) or 1
-    return {t: math.log((n + 1) / (c + 1)) + 1 for t, c in df.items()}
-
-
-def _tfidf_vec(tokens: list[str], idf: dict[str, float]) -> dict[str, float]:
-    if not tokens:
-        return {}
-    tf = Counter(tokens)
-    length = len(tokens)
-    return {t: (c / length) * idf.get(t, 0.0) for t, c in tf.items()}
-
-
-def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
-    if not a or not b:
-        return 0.0
-    dot = sum(v * b.get(t, 0.0) for t, v in a.items())
-    na = math.sqrt(sum(v * v for v in a.values()))
-    nb = math.sqrt(sum(v * v for v in b.values()))
-    return 0.0 if na == 0 or nb == 0 else dot / (na * nb)
+# Matches single-char and multi-char Unicode word tokens, so Devanagari and short
+# Hinglish words both participate in TF-IDF. The sklearn default (\b\w\w+\b) drops
+# every 1-char token.
+_TOKEN_PATTERN = r"(?u)\b\w+\b"
 
 
 # ---------------------------------------------------------------- store
@@ -151,11 +125,14 @@ class FeedbackStore:
             source_quote,
         )
 
-    def top_examples(self, team_id: str, transcript: str, k: int = 3) -> list[dict]:
-        """Return up to `k` past task corrections whose source_quote is most similar to `transcript`.
+    def retrieve_examples(self, team_id: str, transcript: str, k: int = 3) -> list[dict]:
+        """Return up to `k` past task corrections most similar to `transcript`.
 
-        Each example: {"before": dict, "after": dict, "source_quote": str}. Only
-        corrections sharing at least one token with the transcript are returned.
+        TF-IDF via `sklearn.feature_extraction.text.TfidfVectorizer` over the stored
+        `source_quote` of each task correction; `sklearn.metrics.pairwise.cosine_similarity`
+        ranks them against the current transcript. Zero-similarity rows are dropped.
+
+        Each example: {"before": dict, "after": dict, "source_quote": str}.
         """
         with self._conn() as c:
             rows = c.execute(
@@ -165,22 +142,22 @@ class FeedbackStore:
             ).fetchall()
         if not rows or not transcript.strip():
             return []
-        docs_tokens = [_tokenize(r["context"]) for r in rows]
-        idf = _idf(docs_tokens)
-        q = _tfidf_vec(_tokenize(transcript), idf)
-        scored: list[tuple[float, sqlite3.Row]] = []
-        for r, toks in zip(rows, docs_tokens, strict=True):
-            score = _cosine(q, _tfidf_vec(toks, idf))
-            if score > 0:
-                scored.append((score, r))
-        scored.sort(key=lambda pair: pair[0], reverse=True)
+        docs = [r["context"] for r in rows]
+        vec = TfidfVectorizer(token_pattern=_TOKEN_PATTERN, lowercase=True)
+        try:
+            matrix = vec.fit_transform([*docs, transcript])
+        except ValueError:  # empty vocabulary (e.g. transcript shares no \w tokens)
+            return []
+        sims = cosine_similarity(matrix[-1], matrix[:-1]).ravel()
+        ranked = sorted(zip(sims, rows, strict=True), key=lambda p: p[0], reverse=True)
         return [
             {
                 "before": json.loads(r["before"]),
                 "after": json.loads(r["after"]),
                 "source_quote": r["context"],
             }
-            for _, r in scored[:k]
+            for score, r in ranked[:k]
+            if score > 0
         ]
 
     # -------- speaker corrections
@@ -231,7 +208,7 @@ def pipeline_inputs(store: FeedbackStore, team_id: str, transcript: str) -> dict
     result = {
         "keyterms": store.keyterms(team_id),
         "glossary": store.glossary(team_id),
-        "examples": store.top_examples(team_id, transcript, k=3),
+        "examples": store.retrieve_examples(team_id, transcript, k=3),
     }
     log.info(
         "stage=feedback_lookup elapsed_s=%.3f keyterms=%d examples=%d",

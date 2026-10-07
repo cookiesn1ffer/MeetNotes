@@ -121,9 +121,15 @@ def _prompt(
         lines += [f"  {term} — {kind}" for term, kind in glossary.items()]
     else:
         lines.append("  (none)")
-    lines += ["", "Correction examples (past tasks and their accepted extraction):"]
+    lines += ["", "Correction examples (wrong output -> corrected output):"]
     if examples:
-        lines += ["  " + json.dumps(ex, ensure_ascii=False) for ex in examples[:3]]
+        for i, ex in enumerate(examples[:3], start=1):
+            lines += [
+                f"  Example {i}:",
+                f"    source:    {ex.get('source_quote', '')}",
+                f"    wrong:     {json.dumps(ex.get('before', {}), ensure_ascii=False)}",
+                f"    corrected: {json.dumps(ex.get('after', {}), ensure_ascii=False)}",
+            ]
     else:
         lines.append("  (none)")
     lines += ["", "Transcript:", _render_transcript(utterances)]
@@ -268,7 +274,7 @@ def extract(
             merged_glossary.setdefault(term, kind)
         if examples is None:
             transcript = " ".join(u.text for u in utterances)
-            merged_examples = store.top_examples(team_id, transcript, k=3)
+            merged_examples = store.retrieve_examples(team_id, transcript, k=3)
 
     system = SYSTEM_RULES
     user = _prompt(utterances, roster, merged_glossary, merged_examples)

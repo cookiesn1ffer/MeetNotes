@@ -26,7 +26,7 @@ def test_correct_task_endpoint_persists(client):
     assert r.status_code == 200
     assert isinstance(r.json()["id"], int)
     store = client.app.state.store
-    examples = store.top_examples("default", "ppt on planets")
+    examples = store.retrieve_examples("default", "ppt on planets")
     assert examples[0]["after"]["task"] == "ppt on planets"
 
 

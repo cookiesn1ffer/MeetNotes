@@ -42,44 +42,44 @@ def test_correct_task_round_trip(store):
     store.correct_task(
         "default", {"task": "wrong"}, {"task": "ppt on planets"}, "ppt on planets"
     )
-    out = store.top_examples("default", "ppt on planets")
+    out = store.retrieve_examples("default", "ppt on planets")
     assert len(out) == 1
     assert out[0]["before"] == {"task": "wrong"}
     assert out[0]["after"] == {"task": "ppt on planets"}
     assert out[0]["source_quote"] == "ppt on planets"
 
 
-def test_top_examples_ranks_by_lexical_similarity(store):
+def test_retrieve_examples_ranks_by_lexical_similarity(store):
     store.correct_task("default", {}, {"task": "ppt"}, "please prepare the ppt on planets")
     store.correct_task("default", {}, {"task": "checklist"}, "launch readiness checklist")
     store.correct_task("default", {}, {"task": "review"}, "schedule the design review")
-    top = store.top_examples("default", "we need another ppt on the planets", k=2)
+    top = store.retrieve_examples("default", "we need another ppt on the planets", k=2)
     assert top and top[0]["after"]["task"] == "ppt"
 
 
-def test_top_examples_returns_up_to_k_and_drops_unrelated(store):
+def test_retrieve_examples_returns_up_to_k_and_drops_unrelated(store):
     for i in range(5):
         store.correct_task("default", {}, {"task": f"widget-{i}"}, f"ship widget v{i}")
-    top = store.top_examples("default", "ship widget", k=3)
+    top = store.retrieve_examples("default", "ship widget", k=3)
     assert 1 <= len(top) <= 3
     for ex in top:
         assert "widget" in ex["after"]["task"]
 
 
-def test_top_examples_empty_when_no_corrections(store):
-    assert store.top_examples("default", "anything") == []
+def test_retrieve_examples_empty_when_no_corrections(store):
+    assert store.retrieve_examples("default", "anything") == []
 
 
-def test_top_examples_scoped_by_team(store):
+def test_retrieve_examples_scoped_by_team(store):
     store.correct_task("teamA", {}, {"task": "A"}, "ppt on planets")
     store.correct_task("teamB", {}, {"task": "B"}, "ppt on planets")
-    out = store.top_examples("teamA", "ppt on planets")
+    out = store.retrieve_examples("teamA", "ppt on planets")
     assert len(out) == 1 and out[0]["after"]["task"] == "A"
 
 
 def test_tfidf_handles_devanagari(store):
     store.correct_task("t", {}, {"task": "भेजो"}, "कल तक रिपोर्ट भेजो")
-    out = store.top_examples("t", "कल तक रिपोर्ट")
+    out = store.retrieve_examples("t", "कल तक रिपोर्ट")
     assert out and out[0]["after"]["task"] == "भेजो"
 
 

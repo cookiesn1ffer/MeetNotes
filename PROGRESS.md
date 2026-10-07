@@ -10,6 +10,9 @@
 - Prompt 5a-c — schema reset (`corrections` + `glossary` tables), renamed endpoints
   (`/correct_task`, `/correct_speaker`, `/glossary`); glossary wired into `stt.py` as keyterms
   and into `extract.py`'s prompt per `team_id`
+- Prompt 5d — `FeedbackStore.retrieve_examples(team_id, transcript, k=3)` using sklearn
+  `TfidfVectorizer` + `cosine_similarity`; `extract.py` prompt now formats few-shot
+  examples as `wrong output -> corrected output`
 - Deferred gaps closed:
   - `extract.py` now dispatches by `LLM_PROVIDER` env (gemini|anthropic, default gemini);
     `_call_gemini` added alongside `_call_claude`
@@ -25,4 +28,4 @@
 - 9 demo script
 
 ## Failing tests
-- none (57/57 pass; ruff clean)
+- none (59/59 pass; ruff clean)

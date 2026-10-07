@@ -167,6 +167,52 @@ def test_examples_auto_fetched_from_store(tmp_path):
     assert "ppt on planets" in seen["user"]
 
 
+def test_koshal_correction_changes_extract_output_on_similar_transcript(tmp_path):
+    """Stored 'Koshal' -> 'Kaushal' task correction surfaces as a few-shot example
+    whose wrong AND corrected forms appear verbatim in an echoing LLM's output.
+
+    The LLM mock echoes the few-shot block it received into the summary, so if the
+    retrieval wired a past correction into the prompt, the correction's two forms
+    land in the summary; otherwise the summary mentions neither.
+    """
+    quote = "Koshal you are assigned to make a ppt on planets for next meeting"
+    utts = [Utterance("Aarush", 0.0, 5.0, quote, "hin")]
+
+    def echo_call(system: str, user: str, schema: dict) -> dict:
+        # Return the correction-examples block verbatim as the summary.
+        header = "Correction examples (wrong output -> corrected output):"
+        tail = "\n\nTranscript:"
+        start = user.index(header)
+        end = user.index(tail, start)
+        return {"summary": user[start:end], "notes": [], "tasks": []}
+
+    # Empty store -> no example in the prompt, so neither spelling leaks into summary.
+    empty = FeedbackStore(tmp_path / "empty.db")
+    out_empty = extract(utts, roster=["Aarush", "Kaushal"], team_id="t", store=empty, call=echo_call)
+    assert "Koshal" not in out_empty["summary"]
+    assert "Kaushal" not in out_empty["summary"]
+
+    # After storing the correction, both spellings appear via the retrieved example.
+    store = FeedbackStore(tmp_path / "fb.db")
+    store.correct_task(
+        "t",
+        {"assignee": "Koshal", "task": "ppt on planets"},
+        {"assignee": "Kaushal", "task": "ppt on planets"},
+        quote,
+    )
+    out_with = extract(
+        utts, roster=["Aarush", "Kaushal"], team_id="t", store=store, call=echo_call
+    )
+    assert "Koshal" in out_with["summary"]
+    assert "Kaushal" in out_with["summary"]
+    assert out_with["summary"] != out_empty["summary"]
+
+
+def test_retrieve_examples_returns_empty_without_corrections(tmp_path):
+    store = FeedbackStore(tmp_path / "empty.db")
+    assert store.retrieve_examples("t", "anything") == []
+
+
 # ---------------------------------------------------------------- LLM provider dispatch
 
 
