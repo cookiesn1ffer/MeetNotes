@@ -69,10 +69,6 @@
   removed; `api.js` maps exactly to the backend shapes. 15 contract tests in
   `tests/test_ui_contract.py`.
 
-- LLM provider `openai_compat` (alias `opencode`) added to `extract.py`: any OpenAI-style chat
-  completions endpoint, default OpenCode Go `deepseek-v4.1-flash`; configured by `LLM_API_KEY`,
-  `LLM_BASE_URL`, `LLM_MODEL`. Not yet tried against the live API.
-
 ## In progress
 - (none)
 

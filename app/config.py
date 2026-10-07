@@ -35,10 +35,6 @@ def get_gemini_key() -> str:
     return _require("GEMINI_API_KEY")
 
 
-def get_llm_key() -> str:
-    return _require("LLM_API_KEY")
-
-
 def get_voice_threshold() -> float:
     """Cosine-similarity threshold for speaker embedding match. Env: VOICE_MATCH_THRESHOLD."""
     load_env()

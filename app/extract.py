@@ -19,7 +19,7 @@ import urllib.request
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from app.config import get_anthropic_key, get_gemini_key, get_llm_key
+from app.config import get_anthropic_key, get_gemini_key
 from app.models import Utterance
 from app.stt import to_roman
 
@@ -32,14 +32,9 @@ ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-# Any OpenAI-compatible chat-completions endpoint (LLM_BASE_URL / LLM_MODEL override these);
-# the defaults are OpenCode Go's DeepSeek Flash.
-OPENAI_COMPAT_URL = "https://opencode.ai/zen/go/v1/chat/completions"
-
 DEFAULT_MODELS = {
     "gemini": "gemini-2.5-flash",
     "anthropic": "claude-sonnet-5-5",
-    "openai_compat": "deepseek-v4.1-flash",
 }
 
 NAME_MATCH_CUTOFF = 0.7  # difflib ratio; "koshal" vs "kaushal" is ~0.77
@@ -206,36 +201,6 @@ def _call_gemini(system: str, user: str, schema: dict) -> dict:
     return json.loads(text)
 
 
-def _call_openai_compat(system: str, user: str, schema: dict) -> dict:
-    """OpenAI-style chat completions (OpenCode Go, DeepSeek, ...). JSON mode, schema in prompt."""
-    body = {
-        "model": os.environ.get("LLM_MODEL") or DEFAULT_MODELS["openai_compat"],
-        "messages": [
-            {
-                "role": "system",
-                "content": f"{system}\nRespond with a single JSON object matching this JSON schema:\n"
-                f"{json.dumps(schema)}",
-            },
-            {"role": "user", "content": user},
-        ],
-        "response_format": {"type": "json_object"},
-    }
-    headers = {"authorization": f"Bearer {get_llm_key()}", "content-type": "application/json"}
-    response = _post(os.environ.get("LLM_BASE_URL") or OPENAI_COMPAT_URL, headers, body)
-    try:
-        text = response["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, AttributeError) as exc:
-        msg = "OpenAI-compatible response had no message content"
-        raise RuntimeError(msg) from exc
-    if text.startswith("```"):  # some models wrap JSON in a code fence despite JSON mode
-        text = text.strip("`").removeprefix("json").strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        msg = "OpenAI-compatible response was not valid JSON"
-        raise RuntimeError(msg) from exc
-
-
 def _dispatch(system: str, user: str, schema: dict, provider: str | None = None) -> dict:
     """Pick a provider via arg or LLM_PROVIDER env (default 'gemini'). Looks up by name,
     so monkeypatching `_call_claude`/`_call_gemini` on the module works."""
@@ -244,9 +209,7 @@ def _dispatch(system: str, user: str, schema: dict, provider: str | None = None)
         return _call_gemini(system, user, schema)
     if p == "anthropic":
         return _call_claude(system, user, schema)
-    if p in ("openai_compat", "opencode"):
-        return _call_openai_compat(system, user, schema)
-    msg = f"Unknown LLM_PROVIDER={p!r}; expected 'gemini', 'anthropic' or 'openai_compat'"
+    msg = f"Unknown LLM_PROVIDER={p!r}; expected 'gemini' or 'anthropic'"
     raise RuntimeError(msg)
 
 
