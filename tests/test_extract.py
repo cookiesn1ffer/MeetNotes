@@ -269,3 +269,71 @@ def test_unknown_provider_raises(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     with pytest.raises(RuntimeError, match="LLM_PROVIDER"):
         _dispatch("sys", "user", {})
+
+
+# ---------------------------------------------------------------- openai-compatible provider
+
+
+def _capture_post(monkeypatch, content):
+    seen = {}
+
+    def fake_post(url, headers, body):
+        seen.update(url=url, headers=headers, body=body)
+        return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr("app.extract._post", fake_post)
+    return seen
+
+
+def test_openai_compat_defaults_to_opencode_go_deepseek(monkeypatch):
+    from app.extract import SCHEMA, _call_openai_compat
+
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("LLM_BASE_URL", "")  # as copied from .env.example: empty means default
+    monkeypatch.setenv("LLM_MODEL", "")
+    seen = _capture_post(monkeypatch, '{"summary": "s", "notes": [], "tasks": []}')
+    assert _call_openai_compat("sys", "user", SCHEMA)["summary"] == "s"
+    assert seen["url"] == "https://opencode.ai/zen/go/v1/chat/completions"
+    assert seen["body"]["model"] == "deepseek-v4.1-flash"
+    assert seen["body"]["response_format"] == {"type": "json_object"}
+    assert seen["headers"]["authorization"] == "Bearer k"
+    assert "JSON schema" in seen["body"]["messages"][0]["content"]
+
+
+def test_openai_compat_env_overrides_and_fenced_json(monkeypatch):
+    from app.extract import _call_openai_compat
+
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("LLM_BASE_URL", "https://example.test/v1/chat/completions")
+    monkeypatch.setenv("LLM_MODEL", "m-1")
+    seen = _capture_post(monkeypatch, '```json\n{"summary": "x", "notes": [], "tasks": []}\n```')
+    assert _call_openai_compat("s", "u", {})["summary"] == "x"
+    assert seen["url"].startswith("https://example.test") and seen["body"]["model"] == "m-1"
+
+
+def test_openai_compat_bad_responses_raise_clean_errors(monkeypatch):
+    from app.extract import _call_openai_compat
+
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    _capture_post(monkeypatch, "not json")
+    with pytest.raises(RuntimeError, match="not valid JSON"):
+        _call_openai_compat("s", "u", {})
+    monkeypatch.setattr("app.extract._post", lambda *a: {"error": "x"})
+    with pytest.raises(RuntimeError, match="no message content"):
+        _call_openai_compat("s", "u", {})
+
+
+def test_openai_compat_requires_key(monkeypatch, tmp_path):
+    from app.extract import _call_openai_compat
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+        _call_openai_compat("s", "u", {})
+
+
+@pytest.mark.parametrize("name", ["openai_compat", "opencode"])
+def test_dispatch_routes_openai_compat(monkeypatch, name):
+    monkeypatch.setenv("LLM_PROVIDER", name)
+    monkeypatch.setattr("app.extract._call_openai_compat", lambda s, u, sc: {"summary": "ok"})
+    assert _dispatch("s", "u", {}) == {"summary": "ok"}

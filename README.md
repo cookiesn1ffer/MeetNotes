@@ -99,7 +99,8 @@ All read from `.env` at the repo root (never commit it). `.env.example`:
 | `ELEVENLABS_API_KEY`    | STT and TTS                | ElevenLabs Scribe + text-to-speech             |
 | `GEMINI_API_KEY`        | extract (default provider) | Google Generative Language API                 |
 | `ANTHROPIC_API_KEY`     | extract (alt provider)     | used when `LLM_PROVIDER=anthropic`             |
-| `LLM_PROVIDER`          | extract                    | `gemini` (default) or `anthropic`              |
+| `LLM_PROVIDER`          | extract                    | `gemini` (default), `anthropic` or `openai_compat`              |
+| `LLM_API_KEY`           | extract (`openai_compat`)  | OpenCode Go key; also `LLM_BASE_URL`, `LLM_MODEL` (default `deepseek-v4.1-flash`) |
 | `VOICE_MATCH_THRESHOLD` | speaker resolve            | cosine threshold for ECAPA match (default 0.5) |
 | `ELEVENLABS_VOICE_ID`   | TTS                        | optional; defaults to Rachel                   |
 
