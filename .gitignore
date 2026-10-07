@@ -13,3 +13,4 @@ eval/audio/*
 !eval/audio/.gitkeep
 bench/results.md
 ui/node_modules/
+data/uploads/
