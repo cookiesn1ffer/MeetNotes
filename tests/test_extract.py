@@ -1,6 +1,7 @@
 import pytest
 
-from app.extract import _match_assignee, extract
+from app.extract import _dispatch, _match_assignee, extract
+from app.feedback import FeedbackStore
 from app.models import Utterance
 
 SENTENCE = (
@@ -13,11 +14,13 @@ def _utts():
     return [Utterance("Aarush", 0.0, 5.0, SENTENCE, "hin")]
 
 
-def _tool_use(payload: dict) -> dict:
-    return {"content": [{"type": "tool_use", "name": "emit_meeting_notes", "input": payload}]}
+def _payload(**overrides):
+    base = {"summary": "s", "notes": [], "tasks": []}
+    base.update(overrides)
+    return base
 
 
-def _task(**overrides) -> dict:
+def _task(**overrides):
     base = {
         "assignee": "Kaushal",
         "assigned_by": "Aarush",
@@ -32,12 +35,17 @@ def _task(**overrides) -> dict:
     return base
 
 
+# ---------------------------------------------------------------- rule enforcement
+
+
 def test_example_sentence_extracts_single_task():
     captured: dict = {}
 
-    def fake(body):
-        captured["body"] = body
-        return _tool_use({"summary": "s", "notes": [], "tasks": [_task()]})
+    def fake(system, user, schema):
+        captured["system"] = system
+        captured["user"] = user
+        captured["schema"] = schema
+        return _payload(tasks=[_task()])
 
     result = extract(_utts(), roster=["Aarush", "Kaushal"], call=fake)
     assert len(result["tasks"]) == 1
@@ -47,40 +55,30 @@ def test_example_sentence_extracts_single_task():
     assert task["task"] == "ppt on planets"
     assert task["deadline"] == "next meeting"
     assert task["source_quote"] in SENTENCE
-    # Call shape: one tool-forced invocation.
-    assert captured["body"]["tool_choice"] == {"type": "tool", "name": "emit_meeting_notes"}
+    # Schema was handed to the provider.
+    assert captured["schema"]["properties"]["tasks"]["items"]["required"]
 
 
 def test_fuzzy_assignee_koshal_matches_kaushal():
-    def fake(body):
-        return _tool_use({"summary": "", "notes": [], "tasks": [_task(assignee="Koshal")]})
+    def fake(system, user, schema):
+        return _payload(tasks=[_task(assignee="Koshal")])
 
     result = extract(_utts(), roster=["Aarush", "Kaushal"], call=fake)
     assert result["tasks"][0]["assignee"] == "Kaushal"
 
 
 def test_task_without_source_quote_in_transcript_is_dropped():
-    def fake(body):
-        return _tool_use(
-            {
-                "summary": "",
-                "notes": [],
-                "tasks": [_task(source_quote="not in the transcript")],
-            }
-        )
+    def fake(system, user, schema):
+        return _payload(tasks=[_task(source_quote="not in the transcript")])
 
     result = extract(_utts(), roster=["Aarush", "Kaushal"], call=fake)
     assert result["tasks"] == []
 
 
 def test_assignee_not_in_roster_is_dropped():
-    def fake(body):
-        return _tool_use(
-            {
-                "summary": "",
-                "notes": [],
-                "tasks": [_task(assignee="Totally Different", source_quote="Sun ek dwarf star hai.")],
-            }
+    def fake(system, user, schema):
+        return _payload(
+            tasks=[_task(assignee="Totally Different", source_quote="Sun ek dwarf star hai.")]
         )
 
     result = extract(_utts(), roster=["Aarush", "Kaushal"], call=fake)
@@ -90,52 +88,12 @@ def test_assignee_not_in_roster_is_dropped():
 def test_exactly_one_llm_call():
     calls = []
 
-    def fake(body):
-        calls.append(body)
-        return _tool_use({"summary": "", "notes": [], "tasks": []})
+    def fake(system, user, schema):
+        calls.append(1)
+        return _payload()
 
     extract(_utts(), roster=["Aarush"], call=fake)
     assert len(calls) == 1
-
-
-def test_prompt_includes_roster_glossary_and_examples():
-    def fake(body):
-        content = body["messages"][0]["content"]
-        assert "Kaushal" in content
-        assert "ppt: PowerPoint presentation" in content
-        assert "prior-task-id" in content
-        return _tool_use({"summary": "", "notes": [], "tasks": []})
-
-    extract(
-        _utts(),
-        roster=["Aarush", "Kaushal"],
-        glossary={"ppt": "PowerPoint presentation"},
-        examples=[{"id": "prior-task-id", "task": "..."}],
-        call=fake,
-    )
-
-
-def test_only_first_three_examples_are_sent():
-    def fake(body):
-        content = body["messages"][0]["content"]
-        assert "ex4" not in content
-        assert "ex3" in content
-        return _tool_use({"summary": "", "notes": [], "tasks": []})
-
-    extract(
-        _utts(),
-        roster=["Aarush"],
-        examples=[{"id": f"ex{i}"} for i in range(1, 5)],
-        call=fake,
-    )
-
-
-def test_missing_tool_use_block_raises():
-    def fake(body):
-        return {"content": [{"type": "text", "text": "nope"}]}
-
-    with pytest.raises(RuntimeError, match="tool_use"):
-        extract(_utts(), roster=["Aarush"], call=fake)
 
 
 def test_match_assignee_handles_devanagari_transliteration():
@@ -144,3 +102,124 @@ def test_match_assignee_handles_devanagari_transliteration():
 
 def test_match_assignee_rejects_far_names():
     assert _match_assignee("Zephyr", ["Aarush", "Kaushal"]) is None
+
+
+# ---------------------------------------------------------------- prompt wiring
+
+
+def test_prompt_includes_roster_glossary_and_examples_passed_inline():
+    def fake(system, user, schema):
+        assert "Kaushal" in user
+        assert "KPI — acronym" in user
+        assert "ppt on planets" in user
+        return _payload()
+
+    extract(
+        _utts(),
+        roster=["Aarush", "Kaushal"],
+        glossary={"KPI": "acronym"},
+        examples=[{"before": {}, "after": {"task": "ppt on planets"}, "source_quote": "x"}],
+        call=fake,
+    )
+
+
+def test_team_glossary_from_store_appears_in_prompt(tmp_path):
+    store = FeedbackStore(tmp_path / "fb.db")
+    store.add_glossary_term("teamA", "Kaushal", "person")
+    seen: dict = {}
+
+    def fake(system, user, schema):
+        seen["user"] = user
+        return _payload()
+
+    extract(_utts(), roster=["Aarush", "Kaushal"], team_id="teamA", store=store, call=fake)
+    assert "Kaushal — person" in seen["user"]
+
+
+def test_team_glossary_scoped_by_team_id_in_extract(tmp_path):
+    store = FeedbackStore(tmp_path / "fb.db")
+    store.add_glossary_term("teamA", "Kaushal", "person")
+    seen: dict = {}
+
+    def fake(system, user, schema):
+        seen["user"] = user
+        return _payload()
+
+    extract(_utts(), roster=["Aarush", "Kaushal"], team_id="teamB", store=store, call=fake)
+    assert "Kaushal — person" not in seen["user"]
+
+
+def test_examples_auto_fetched_from_store(tmp_path):
+    store = FeedbackStore(tmp_path / "fb.db")
+    store.correct_task(
+        "teamA",
+        {"task": "wrong"},
+        {"task": "ppt on planets"},
+        "Kaushal you are assigned to make a ppt on planets",
+    )
+    seen: dict = {}
+
+    def fake(system, user, schema):
+        seen["user"] = user
+        return _payload()
+
+    extract(_utts(), roster=["Aarush", "Kaushal"], team_id="teamA", store=store, call=fake)
+    assert "ppt on planets" in seen["user"]
+
+
+# ---------------------------------------------------------------- LLM provider dispatch
+
+
+def test_llm_provider_gemini_default_routes_to_gemini(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+
+    def fake_gemini(system, user, schema):
+        calls.append("gemini")
+        return _payload()
+
+    def fake_claude(system, user, schema):
+        calls.append("anthropic")
+        return _payload()
+
+    monkeypatch.setattr("app.extract._call_gemini", fake_gemini)
+    monkeypatch.setattr("app.extract._call_claude", fake_claude)
+    extract(_utts(), roster=["Aarush"])
+    assert calls == ["gemini"]
+
+
+def test_llm_provider_anthropic_env_routes_to_claude(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+
+    def fake_gemini(system, user, schema):
+        calls.append("gemini")
+        return _payload()
+
+    def fake_claude(system, user, schema):
+        calls.append("anthropic")
+        return _payload()
+
+    monkeypatch.setattr("app.extract._call_gemini", fake_gemini)
+    monkeypatch.setattr("app.extract._call_claude", fake_claude)
+    extract(_utts(), roster=["Aarush"])
+    assert calls == ["anthropic"]
+
+
+def test_provider_kwarg_overrides_env(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+
+    def fake_gemini(system, user, schema):
+        calls.append("gemini")
+        return _payload()
+
+    monkeypatch.setattr("app.extract._call_gemini", fake_gemini)
+    extract(_utts(), roster=["Aarush"], provider="gemini")
+    assert calls == ["gemini"]
+
+
+def test_unknown_provider_raises(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    with pytest.raises(RuntimeError, match="LLM_PROVIDER"):
+        _dispatch("sys", "user", {})

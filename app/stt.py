@@ -1,5 +1,6 @@
 """audio -> list[Utterance] via ElevenLabs Scribe (diarized, word timestamps, auto language)."""
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -9,15 +10,20 @@ import urllib.request
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.config import get_elevenlabs_key
 from app.models import Utterance
+
+if TYPE_CHECKING:
+    from app.feedback import FeedbackStore
 
 log = logging.getLogger(__name__)
 
 SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 SCRIBE_MODEL = "scribe_v1"
 GAP_SPLIT_S = 2.0  # same speaker, silence longer than this starts a new utterance
+DEFAULT_CACHE_DIR = Path(".cache") / "stt"
 
 # ---------------------------------------------------------------- Roman normalization
 
@@ -193,19 +199,63 @@ def utterances_from_response(data: dict, *, roman: bool = False) -> list[Utteran
     return utterances
 
 
+def _audio_sha256(audio: Path) -> str:
+    h = hashlib.sha256()
+    with audio.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _cache_file(audio: Path, cache_dir: Path) -> Path:
+    return cache_dir / f"{_audio_sha256(audio)}.json"
+
+
 def transcribe(
     audio: Path,
     keyterms: list[str] | None = None,
     *,
+    team_id: str | None = None,
+    store: "FeedbackStore | None" = None,
     roman: bool = False,
     post: Callable[[Path, list[str] | None], dict] = _post_scribe,
+    use_cache: bool = True,
+    cache_dir: Path | None = None,
 ) -> list[Utterance]:
     """Transcribe `audio` with diarization and word timestamps; language is auto-detected.
 
-    `roman=True` normalizes Devanagari to Roman (Hinglish). `post` is injectable for tests.
+    If `team_id` and `store` are given, glossary terms for that team are merged into
+    `keyterms` before calling Scribe. If `use_cache` is set (the default), the raw
+    Scribe response is cached under `.cache/stt/<sha256>.json`; a second call for the
+    same audio file returns the cached response without hitting ElevenLabs.
     """
     t0 = time.perf_counter()
-    data = post(Path(audio), keyterms)
+    audio = Path(audio)
+
+    merged_keyterms = list(keyterms or [])
+    if team_id and store is not None:
+        for term in store.keyterms(team_id):
+            if term not in merged_keyterms:
+                merged_keyterms.append(term)
+
+    cache_dir = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
+    cache_path = _cache_file(audio, cache_dir) if use_cache else None
+
+    if cache_path is not None and cache_path.is_file():
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        cached = True
+    else:
+        data = post(audio, merged_keyterms)
+        cached = False
+        if cache_path is not None:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
     result = utterances_from_response(data, roman=roman)
-    log.info("stage=stt elapsed_s=%.3f utterances=%d", time.perf_counter() - t0, len(result))
+    log.info(
+        "stage=stt elapsed_s=%.3f utterances=%d cached=%s",
+        time.perf_counter() - t0,
+        len(result),
+        cached,
+    )
     return result

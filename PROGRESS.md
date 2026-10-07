@@ -5,21 +5,24 @@
 - Prompt 1 — repo scaffold, data models
 - Prompt 2 — `app/stt.py` (ElevenLabs Scribe, diarization, word timestamps, Roman normalization) + `scripts/hinglish_check.py`
 - Prompt 3 — `app/speakers.py` (ECAPA + transcript fallback) + `scripts/speaker_eval.py`
-- Prompt 4 — `app/extract.py` (single Claude call, tool-use JSON, fuzzy assignee match)
-- Prompt 5 — `app/feedback.py` + `app/api/main.py` (glossary, task + speaker corrections, TF-IDF retrieval, roster merge)
+- Prompt 4 — `app/extract.py` (single LLM call, tool-use/response_schema JSON, fuzzy assignee match)
+- Prompt 5 — `app/feedback.py` + `app/api/main.py` (glossary, corrections, TF-IDF retrieval, roster merge)
+- Prompt 5a-c — schema reset (`corrections` + `glossary` tables), renamed endpoints
+  (`/correct_task`, `/correct_speaker`, `/glossary`); glossary wired into `stt.py` as keyterms
+  and into `extract.py`'s prompt per `team_id`
+- Deferred gaps closed:
+  - `extract.py` now dispatches by `LLM_PROVIDER` env (gemini|anthropic, default gemini);
+    `_call_gemini` added alongside `_call_claude`
+  - `stt.py` now caches Scribe responses under `.cache/stt/<sha256>.json`
 
 ## In progress
 - (none)
 
 ## Next
-- 6 bench + pipeline glue (also wires `feedback.pipeline_inputs` into stt+extract)
+- 6 bench + pipeline glue
 - 7 CI (ubuntu-latest + windows-latest matrix) + audio capture
 - 8 UI
 - 9 demo script
 
-## Deferred / known gaps
-- `app/extract.py` is Anthropic-only; env rule says `LLM_PROVIDER` switch, default `gemini`. Fix on the next touch of extract.py.
-- `app/stt.py` has no cache; env rule says hash-based cache under `.cache/stt/`. Fix on the next touch of stt.py.
-
 ## Failing tests
-- none (43/43 pass; ruff clean)
+- none (57/57 pass; ruff clean)

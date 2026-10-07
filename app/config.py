@@ -29,3 +29,7 @@ def get_elevenlabs_key() -> str:
 
 def get_anthropic_key() -> str:
     return _require("ANTHROPIC_API_KEY")
+
+
+def get_gemini_key() -> str:
+    return _require("GEMINI_API_KEY")

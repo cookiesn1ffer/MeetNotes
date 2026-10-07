@@ -1,7 +1,8 @@
-"""FastAPI endpoints for user corrections.
+"""FastAPI endpoints for user corrections and glossary.
 
-Keep it thin: the API only writes to the feedback store. Reads flow through
-the pipeline (`app.feedback.pipeline_inputs`), not through these endpoints.
+Endpoints are thin wrappers over `app.feedback.FeedbackStore`. Reads happen on the
+pipeline side (via `pipeline_inputs` or the `team_id`/`store` kwargs on stt/extract),
+not through this API.
 """
 
 from pathlib import Path
@@ -16,26 +17,25 @@ DEFAULT_DB = Path("data/meetnotes.db")
 
 
 class TaskCorrectionIn(BaseModel):
-    team: str = DEFAULT_TEAM
-    meeting_id: str
+    team_id: str = DEFAULT_TEAM
+    before: dict = Field(default_factory=dict, description="Original (possibly wrong) task.")
+    after: dict = Field(..., description="The user's corrected task.")
     source_quote: str = Field(..., description="Verbatim transcript substring the task came from.")
-    correction: dict = Field(..., description="The user's corrected task object.")
 
 
 class SpeakerCorrectionIn(BaseModel):
-    team: str = DEFAULT_TEAM
-    meeting_id: str
-    raw_label: str = Field(..., description="Original diarization label, e.g. 'speaker_0'.")
-    name: str
+    team_id: str = DEFAULT_TEAM
+    before: str = Field(..., description="Original diarization label, e.g. 'speaker_0'.")
+    after: str = Field(..., description="Corrected speaker name.")
     clip_path: str | None = Field(
         None, description="Path to an enrollment clip extracted from the meeting audio."
     )
 
 
 class GlossaryTermIn(BaseModel):
-    team: str = DEFAULT_TEAM
+    team_id: str = DEFAULT_TEAM
     term: str
-    definition: str
+    kind: str = Field(..., description="Category of the term (person, product, acronym, ...).")
 
 
 def create_app(store: FeedbackStore | None = None) -> FastAPI:
@@ -47,27 +47,24 @@ def create_app(store: FeedbackStore | None = None) -> FastAPI:
     def get_store() -> FeedbackStore:
         return app.state.store
 
-    @app.post("/corrections/task")
+    @app.post("/correct_task")
     def correct_task(body: TaskCorrectionIn, s: FeedbackStore = Depends(get_store)) -> dict:
-        row_id = s.record_task_correction(
-            body.team, body.meeting_id, body.source_quote, body.correction
-        )
+        row_id = s.correct_task(body.team_id, body.before, body.after, body.source_quote)
         return {"id": row_id}
 
-    @app.post("/corrections/speaker")
+    @app.post("/correct_speaker")
     def correct_speaker(body: SpeakerCorrectionIn, s: FeedbackStore = Depends(get_store)) -> dict:
-        row_id = s.record_speaker_correction(
-            body.team,
-            body.meeting_id,
-            body.raw_label,
-            body.name,
+        row_id = s.correct_speaker(
+            body.team_id,
+            body.before,
+            body.after,
             Path(body.clip_path) if body.clip_path else None,
         )
         return {"id": row_id}
 
     @app.post("/glossary")
     def add_glossary_term(body: GlossaryTermIn, s: FeedbackStore = Depends(get_store)) -> dict:
-        s.add_glossary_term(body.team, body.term, body.definition)
+        s.add_glossary_term(body.team_id, body.term, body.kind)
         return {"ok": True}
 
     return app

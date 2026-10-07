@@ -15,33 +15,27 @@ def client(tmp_path) -> TestClient:
 
 def test_correct_task_endpoint_persists(client):
     r = client.post(
-        "/corrections/task",
+        "/correct_task",
         json={
-            "team": "default",
-            "meeting_id": "m1",
+            "team_id": "default",
+            "before": {"task": "wrong", "assignee": "Someone"},
+            "after": {"task": "ppt on planets", "assignee": "Kaushal"},
             "source_quote": "please prep the ppt on planets",
-            "correction": {"task": "ppt on planets", "assignee": "Kaushal"},
         },
     )
     assert r.status_code == 200
     assert isinstance(r.json()["id"], int)
-    # Round-trip through the store on the same app.
     store = client.app.state.store
     examples = store.top_examples("default", "ppt on planets")
-    assert examples[0]["correction"]["task"] == "ppt on planets"
+    assert examples[0]["after"]["task"] == "ppt on planets"
 
 
 def test_correct_speaker_endpoint_persists(client, tmp_path):
     clip = tmp_path / "clip.wav"
     clip.write_bytes(b"fake")
     r = client.post(
-        "/corrections/speaker",
-        json={
-            "meeting_id": "m1",
-            "raw_label": "speaker_0",
-            "name": "Aarush",
-            "clip_path": str(clip),
-        },
+        "/correct_speaker",
+        json={"before": "speaker_0", "after": "Aarush", "clip_path": str(clip)},
     )
     assert r.status_code == 200
     store = client.app.state.store
@@ -50,16 +44,24 @@ def test_correct_speaker_endpoint_persists(client, tmp_path):
 
 def test_correct_speaker_endpoint_without_clip(client):
     r = client.post(
-        "/corrections/speaker",
-        json={"meeting_id": "m1", "raw_label": "speaker_0", "name": "Aarush"},
+        "/correct_speaker",
+        json={"before": "speaker_0", "after": "Aarush"},
     )
     assert r.status_code == 200
     store = client.app.state.store
-    assert store.enrollments_for("default", "Aarush") == []  # name recorded, no clip
+    assert store.enrollments_for("default", "Aarush") == []
 
 
 def test_add_glossary_term_endpoint(client):
-    r = client.post("/glossary", json={"term": "OKR", "definition": "obj + key results"})
+    r = client.post("/glossary", json={"term": "OKR", "kind": "acronym"})
     assert r.status_code == 200
     store = client.app.state.store
-    assert store.glossary("default") == {"OKR": "obj + key results"}
+    assert store.glossary("default") == {"OKR": "acronym"}
+
+
+def test_add_glossary_term_endpoint_team_scoping(client):
+    client.post("/glossary", json={"team_id": "teamA", "term": "Kaushal", "kind": "person"})
+    client.post("/glossary", json={"team_id": "teamB", "term": "OKR", "kind": "acronym"})
+    store = client.app.state.store
+    assert store.keyterms("teamA") == ["Kaushal"]
+    assert store.keyterms("teamB") == ["OKR"]

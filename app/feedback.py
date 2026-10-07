@@ -1,13 +1,16 @@
-"""User corrections, keyterms, and few-shot example retrieval.
+"""User corrections, team glossary, and few-shot example retrieval.
 
-A single SQLite file holds three tables scoped by `team`:
-    glossary               : (team, term, definition)         - STT keyterms + prompt glossary
-    task_corrections       : (team, meeting_id, source_quote, correction_json)
-    speaker_corrections    : (team, meeting_id, raw_label, name, clip_path)
+Two SQLite tables scoped by `team_id`:
+    corrections(id, team_id, kind, before, after, context, created_at)
+        kind = 'task'    -> before/after are JSON task dicts, context is the source_quote
+        kind = 'speaker' -> before is the raw diarization label (e.g. 'speaker_0'),
+                            after is the corrected name, context is the enrollment clip path
+    glossary(team_id, term, kind, created_at)
+        kind labels the term's category (person, product, acronym, ...).
 
-Retrieval uses a tiny bag-of-words TF-IDF (no vector DB). Speaker corrections
-contribute enrollment clips that `build_roster()` adds to the base roster;
-`app.speakers.resolve` then averages the per-name clip embeddings on the next run.
+Retrieval uses a tiny bag-of-words TF-IDF (no vector DB). Speaker corrections contribute
+enrollment clips that `build_roster()` adds to the base roster; `app.speakers.resolve`
+averages the per-name clip embeddings on the next run.
 """
 
 import json
@@ -25,29 +28,23 @@ from app.speakers import Roster
 log = logging.getLogger(__name__)
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS glossary (
-    team       TEXT NOT NULL,
-    term       TEXT NOT NULL,
-    definition TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (team, term)
-);
-CREATE TABLE IF NOT EXISTS task_corrections (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    team            TEXT NOT NULL,
-    meeting_id      TEXT NOT NULL,
-    source_quote    TEXT NOT NULL,
-    correction_json TEXT NOT NULL,
-    created_at      TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS speaker_corrections (
+CREATE TABLE IF NOT EXISTS corrections (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    team       TEXT NOT NULL,
-    meeting_id TEXT NOT NULL,
-    raw_label  TEXT NOT NULL,
-    name       TEXT NOT NULL,
-    clip_path  TEXT,
+    team_id    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    "before"   TEXT NOT NULL,
+    "after"    TEXT NOT NULL,
+    context    TEXT NOT NULL,
     created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_corrections_team_kind
+    ON corrections(team_id, kind);
+CREATE TABLE IF NOT EXISTS glossary (
+    team_id    TEXT NOT NULL,
+    term       TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, term)
 );
 """
 
@@ -56,8 +53,11 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+# ---------------------------------------------------------------- TF-IDF (stdlib only)
+
+
 def _tokenize(text: str) -> list[str]:
-    # \w includes Devanagari under Python's default UNICODE flag.
+    # \w matches Devanagari under Python's default UNICODE flag.
     return re.findall(r"\w+", text.lower())
 
 
@@ -66,7 +66,6 @@ def _idf(docs_tokens: list[list[str]]) -> dict[str, float]:
     for toks in docs_tokens:
         df.update(set(toks))
     n = len(docs_tokens) or 1
-    # Smoothed IDF; +1 keeps unseen terms from dominating.
     return {t: math.log((n + 1) / (c + 1)) + 1 for t, c in df.items()}
 
 
@@ -81,10 +80,13 @@ def _tfidf_vec(tokens: list[str], idf: dict[str, float]) -> dict[str, float]:
 def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
     if not a or not b:
         return 0.0
-    dot = sum(a[t] * b.get(t, 0.0) for t in a)
+    dot = sum(v * b.get(t, 0.0) for t, v in a.items())
     na = math.sqrt(sum(v * v for v in a.values()))
     nb = math.sqrt(sum(v * v for v in b.values()))
     return 0.0 if na == 0 or nb == 0 else dot / (na * nb)
+
+
+# ---------------------------------------------------------------- store
 
 
 class FeedbackStore:
@@ -101,125 +103,135 @@ class FeedbackStore:
         conn.row_factory = sqlite3.Row
         return conn
 
-    # ---------------------------------------------------------------- glossary
+    # -------- glossary
 
-    def add_glossary_term(self, team: str, term: str, definition: str) -> None:
+    def add_glossary_term(self, team_id: str, term: str, kind: str) -> None:
         with self._conn() as c:
             c.execute(
-                "INSERT INTO glossary(team, term, definition, created_at) VALUES (?,?,?,?) "
-                "ON CONFLICT(team, term) DO UPDATE SET definition=excluded.definition",
-                (team, term, definition, _now()),
+                "INSERT INTO glossary(team_id, term, kind, created_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(team_id, term) DO UPDATE SET kind=excluded.kind",
+                (team_id, term, kind, _now()),
             )
 
-    def glossary(self, team: str) -> dict[str, str]:
+    def glossary(self, team_id: str) -> dict[str, str]:
+        """Return {term: kind} for the given team, ordered by term."""
         with self._conn() as c:
             rows = c.execute(
-                "SELECT term, definition FROM glossary WHERE team=? ORDER BY term",
-                (team,),
+                "SELECT term, kind FROM glossary WHERE team_id=? ORDER BY term",
+                (team_id,),
             ).fetchall()
-        return {r["term"]: r["definition"] for r in rows}
+        return {r["term"]: r["kind"] for r in rows}
 
-    def keyterms(self, team: str) -> list[str]:
-        return list(self.glossary(team).keys())
+    def keyterms(self, team_id: str) -> list[str]:
+        return list(self.glossary(team_id).keys())
 
-    # ---------------------------------------------------------------- task corrections
+    # -------- corrections (low-level)
 
-    def record_task_correction(
-        self, team: str, meeting_id: str, source_quote: str, correction: dict
+    def _insert_correction(
+        self, team_id: str, kind: str, before: str, after: str, context: str
     ) -> int:
         with self._conn() as c:
             cur = c.execute(
-                "INSERT INTO task_corrections(team, meeting_id, source_quote, correction_json, "
-                "created_at) VALUES (?,?,?,?,?)",
-                (team, meeting_id, source_quote, json.dumps(correction, ensure_ascii=False), _now()),
+                'INSERT INTO corrections(team_id, kind, "before", "after", context, created_at) '
+                "VALUES (?,?,?,?,?,?)",
+                (team_id, kind, before, after, context, _now()),
             )
             return int(cur.lastrowid)
 
-    def _all_task_corrections(self, team: str) -> list[dict]:
+    # -------- task corrections
+
+    def correct_task(
+        self, team_id: str, before: dict, after: dict, source_quote: str
+    ) -> int:
+        return self._insert_correction(
+            team_id,
+            "task",
+            json.dumps(before, ensure_ascii=False),
+            json.dumps(after, ensure_ascii=False),
+            source_quote,
+        )
+
+    def top_examples(self, team_id: str, transcript: str, k: int = 3) -> list[dict]:
+        """Return up to `k` past task corrections whose source_quote is most similar to `transcript`.
+
+        Each example: {"before": dict, "after": dict, "source_quote": str}. Only
+        corrections sharing at least one token with the transcript are returned.
+        """
         with self._conn() as c:
             rows = c.execute(
-                "SELECT source_quote, correction_json FROM task_corrections WHERE team=?",
-                (team,),
+                'SELECT "before", "after", context FROM corrections '
+                "WHERE team_id=? AND kind=?",
+                (team_id, "task"),
             ).fetchall()
-        return [
-            {"source_quote": r["source_quote"], "correction": json.loads(r["correction_json"])}
-            for r in rows
-        ]
-
-    def top_examples(self, team: str, transcript: str, k: int = 3) -> list[dict]:
-        """Return up to `k` past corrections whose source_quote is most similar to `transcript`."""
-        corrections = self._all_task_corrections(team)
-        if not corrections or not transcript.strip():
+        if not rows or not transcript.strip():
             return []
-        docs_tokens = [_tokenize(c["source_quote"]) for c in corrections]
+        docs_tokens = [_tokenize(r["context"]) for r in rows]
         idf = _idf(docs_tokens)
         q = _tfidf_vec(_tokenize(transcript), idf)
-        scored = sorted(
-            zip(corrections, docs_tokens, strict=True),
-            key=lambda pair: _cosine(q, _tfidf_vec(pair[1], idf)),
-            reverse=True,
-        )
-        top = [c for c, _ in scored[:k]]
-        # Drop zero-similarity hits (nothing lexically in common).
-        top = [
-            c for c, toks in zip(top, [t for _, t in scored[:k]], strict=True)
-            if _cosine(q, _tfidf_vec(toks, idf)) > 0
+        scored: list[tuple[float, sqlite3.Row]] = []
+        for r, toks in zip(rows, docs_tokens, strict=True):
+            score = _cosine(q, _tfidf_vec(toks, idf))
+            if score > 0:
+                scored.append((score, r))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [
+            {
+                "before": json.loads(r["before"]),
+                "after": json.loads(r["after"]),
+                "source_quote": r["context"],
+            }
+            for _, r in scored[:k]
         ]
-        return top
 
-    # ---------------------------------------------------------------- speaker corrections
+    # -------- speaker corrections
 
-    def record_speaker_correction(
+    def correct_speaker(
         self,
-        team: str,
-        meeting_id: str,
-        raw_label: str,
-        name: str,
+        team_id: str,
+        before_label: str,
+        after_name: str,
         clip_path: Path | None = None,
     ) -> int:
-        with self._conn() as c:
-            cur = c.execute(
-                "INSERT INTO speaker_corrections(team, meeting_id, raw_label, name, clip_path, "
-                "created_at) VALUES (?,?,?,?,?,?)",
-                (team, meeting_id, raw_label, name, str(clip_path) if clip_path else None, _now()),
-            )
-            return int(cur.lastrowid)
+        return self._insert_correction(
+            team_id,
+            "speaker",
+            before_label,
+            after_name,
+            str(clip_path) if clip_path else "",
+        )
 
-    def enrollments_for(self, team: str, name: str) -> list[Path]:
+    def enrollments_for(self, team_id: str, name: str) -> list[Path]:
         with self._conn() as c:
             rows = c.execute(
-                "SELECT clip_path FROM speaker_corrections "
-                "WHERE team=? AND name=? AND clip_path IS NOT NULL "
+                'SELECT context FROM corrections '
+                'WHERE team_id=? AND kind=? AND "after"=? AND context!="" '
                 "ORDER BY id",
-                (team, name),
+                (team_id, "speaker", name),
             ).fetchall()
-        return [Path(r["clip_path"]) for r in rows]
+        return [Path(r["context"]) for r in rows]
 
-    def build_roster(self, team: str, base: dict[str, list[Path]]) -> Roster:
+    def build_roster(self, team_id: str, base: dict[str, list[Path]]) -> Roster:
         """Merge `base` enrollments with every stored speaker-correction clip."""
         merged = {name: list(paths) for name, paths in base.items()}
         with self._conn() as c:
             rows = c.execute(
-                "SELECT DISTINCT name FROM speaker_corrections WHERE team=?", (team,)
+                'SELECT DISTINCT "after" FROM corrections WHERE team_id=? AND kind=?',
+                (team_id, "speaker"),
             ).fetchall()
         for row in rows:
-            name = row["name"]
+            name = row["after"]
             merged.setdefault(name, [])
-            merged[name].extend(self.enrollments_for(team, name))
-        return Roster({n: p for n, p in merged.items()})
+            merged[name].extend(self.enrollments_for(team_id, name))
+        return Roster(merged)
 
 
-def pipeline_inputs(store: FeedbackStore, team: str, transcript: str) -> dict:
-    """Shortcut used by the pipeline before each new meeting.
-
-    Returns {keyterms, glossary, examples} - keyterms go to Scribe,
-    glossary + examples go into the extraction prompt.
-    """
+def pipeline_inputs(store: FeedbackStore, team_id: str, transcript: str) -> dict:
+    """Convenience: fetch everything the pipeline needs before a new meeting."""
     t0 = time.perf_counter()
     result = {
-        "keyterms": store.keyterms(team),
-        "glossary": store.glossary(team),
-        "examples": store.top_examples(team, transcript, k=3),
+        "keyterms": store.keyterms(team_id),
+        "glossary": store.glossary(team_id),
+        "examples": store.top_examples(team_id, transcript, k=3),
     }
     log.info(
         "stage=feedback_lookup elapsed_s=%.3f keyterms=%d examples=%d",
