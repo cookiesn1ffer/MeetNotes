@@ -20,7 +20,6 @@
 ## Deferred / known gaps
 - `app/extract.py` is Anthropic-only; env rule says `LLM_PROVIDER` switch, default `gemini`. Fix on the next touch of extract.py.
 - `app/stt.py` has no cache; env rule says hash-based cache under `.cache/stt/`. Fix on the next touch of stt.py.
-- Repo is not a git repository yet, so the "commit after every task" step is skipped until `git init` is run.
 
 ## Failing tests
 - none (43/43 pass; ruff clean)
