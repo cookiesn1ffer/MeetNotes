@@ -24,14 +24,18 @@
     `_call_gemini` added alongside `_call_claude`
   - `stt.py` now caches Scribe responses under `.cache/stt/<sha256>.json`
 
+- Prompt 6 — `app/bench.py` (`uv run python -m app.bench`): per-clip metrics
+  (time-to-notes, STT time, LLM time, WER, time-weighted speaker accuracy,
+  task precision + recall with assignee-exact + fuzzy-text matching) written to
+  `bench/results.md`; PASS thresholds documented in the module header
+
 ## In progress
 - (none)
 
 ## Next
-- 6 bench + pipeline glue
 - 7 CI (ubuntu-latest + windows-latest matrix) + audio capture
 - 8 UI
 - 9 demo script
 
 ## Failing tests
-- none (71/71 pass; ruff clean)
+- none (82/82 pass; ruff clean)
