@@ -33,13 +33,19 @@
   interface (`FileSource`, `MicSource` with lazy sounddevice, `SystemAudioSource`
   stub carrying Windows WASAPI loopback / Linux PipeWire monitor TODOs);
   `tests/test_smoke_pipeline.py` for the mocked end-to-end run
+- Prompt 8 — single-page web UI served by FastAPI (`app/api/static/index.html`,
+  plain HTML + vanilla JS, no framework): upload or MediaRecorder record, roster
+  input, per-person task list with inline edit (POSTs `/correct_task`), notes,
+  transcript, timings panel from captured `stage=…` log lines, and a "read my
+  tasks" ElevenLabs TTS proxy at `/tts`. New `/process` endpoint runs the full
+  pipeline on an uploaded clip (team-scoped glossary + corrections auto-wired)
+  and returns summary/notes/tasks/utterances/roster/timings as JSON.
 
 ## In progress
 - (none)
 
 ## Next
-- 8 UI
 - 9 demo script
 
 ## Failing tests
-- none (89/89 pass; ruff clean)
+- none (97/97 pass; ruff clean)

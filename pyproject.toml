@@ -3,9 +3,10 @@ name = "meetnotes"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.110",       # correction/glossary API endpoints
-    "uvicorn>=0.30",        # ASGI server for the FastAPI app
-    "scikit-learn>=1.3",    # TfidfVectorizer + cosine_similarity for example retrieval
+    "fastapi>=0.110",         # correction/glossary API endpoints + web UI
+    "uvicorn>=0.30",          # ASGI server for the FastAPI app
+    "scikit-learn>=1.3",      # TfidfVectorizer + cosine_similarity for example retrieval
+    "python-multipart>=0.0.9",# multipart/form-data for FastAPI UploadFile in /process
 ]
 
 [project.optional-dependencies]

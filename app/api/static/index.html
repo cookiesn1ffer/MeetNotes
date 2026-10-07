@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeetNotes</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6;
+    --card: #181b22; --accent: #7aa2ff; --border: #262a33; --err: #ff6a6a;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fafafa; --fg: #1a1a1a; --muted: #666;
+      --card: #ffffff; --accent: #2b5bff; --border: #e3e3e3; --err: #c62828;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+    margin: 0; padding: 1rem;
+  }
+  main { max-width: 920px; margin: 0 auto; }
+  h1 { margin: 0 0 1rem; font-size: 1.3rem; }
+  h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+  h3 { margin: 0.75rem 0 0.25rem; font-size: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1rem; margin: 0.75rem 0;
+  }
+  label { display: block; margin-top: 0.6rem; font-size: 0.85rem; color: var(--muted); }
+  input[type=text], input[type=file], textarea, select {
+    background: transparent; color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.4rem 0.6rem; width: 100%; font: inherit; margin-top: 0.2rem;
+  }
+  button {
+    background: var(--accent); color: white; border: 0;
+    padding: 0.5rem 0.9rem; border-radius: 6px;
+    font: inherit; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 0.5rem; }
+  pre { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.85rem; white-space: pre-wrap; margin: 0; }
+  .task {
+    display: grid; grid-template-columns: 1fr auto;
+    gap: 0.5rem; align-items: start;
+    padding: 0.4rem 0; border-bottom: 1px solid var(--border);
+  }
+  .task:last-child { border-bottom: 0; }
+  .hidden { display: none; }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  .timings { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8rem; color: var(--muted); }
+  .err { color: var(--err); }
+  #status { font-size: 0.9rem; color: var(--muted); margin-left: auto; }
+  .edit-form label { margin-top: 0.4rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>MeetNotes</h1>
+
+  <section class="card">
+    <h2>Input</h2>
+    <label>Team ID
+      <input id="teamId" type="text" value="default">
+    </label>
+    <label>Roster (comma-separated)
+      <input id="roster" type="text" placeholder="Aarush, Kaushal, Priya">
+    </label>
+    <label>Audio file (wav / mp3 / m4a / webm)
+      <input id="audioFile" type="file" accept="audio/*">
+    </label>
+    <div class="row">
+      <button id="recordBtn" class="ghost" type="button">● Record</button>
+      <button id="processBtn" type="button">Process</button>
+      <span id="status"></span>
+    </div>
+  </section>
+
+  <section id="results" class="hidden">
+    <div class="card">
+      <h2>Summary</h2>
+      <p id="summary"></p>
+    </div>
+
+    <div class="card">
+      <h2>Tasks by person</h2>
+      <div id="tasks"></div>
+    </div>
+
+    <div class="card">
+      <h2>Notes</h2>
+      <div id="notes"></div>
+    </div>
+
+    <div class="card">
+      <h2>Transcript</h2>
+      <pre id="transcript"></pre>
+    </div>
+
+    <div class="card">
+      <h2>Timings</h2>
+      <pre class="timings" id="timings"></pre>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  let lastResult = null;
+  let recordedBlob = null;
+  let recorder = null;
+
+  // ---------- recording ----------
+  $("recordBtn").addEventListener("click", async () => {
+    if (!recorder || recorder.state === "inactive") {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        recorder = new MediaRecorder(stream);
+        const chunks = [];
+        recorder.ondataavailable = (e) => chunks.push(e.data);
+        recorder.onstop = () => {
+          recordedBlob = new Blob(chunks, { type: "audio/webm" });
+          $("audioFile").value = "";
+          $("status").textContent = `Recorded ${(recordedBlob.size / 1024).toFixed(0)} KB`;
+          stream.getTracks().forEach((t) => t.stop());
+          $("recordBtn").textContent = "● Record";
+        };
+        recorder.start();
+        $("recordBtn").textContent = "■ Stop";
+        $("status").textContent = "Recording...";
+      } catch (err) {
+        setError(`Mic record failed: ${err.message}`);
+      }
+    } else {
+      recorder.stop();
+    }
+  });
+
+  // ---------- process ----------
+  $("processBtn").addEventListener("click", async () => {
+    const picked = $("audioFile").files[0];
+    const audio = picked || (recordedBlob
+      ? new File([recordedBlob], "recording.webm", { type: "audio/webm" })
+      : null);
+    if (!audio) {
+      setError("Pick a file or record first");
+      return;
+    }
+    const form = new FormData();
+    form.append("audio", audio);
+    form.append("team_id", $("teamId").value || "default");
+    form.append("roster", $("roster").value || "");
+    $("processBtn").disabled = true;
+    $("status").textContent = "Processing...";
+    try {
+      const r = await fetch("/process", { method: "POST", body: form });
+      if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+      lastResult = await r.json();
+      render(lastResult);
+      $("status").textContent = "Done";
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      $("processBtn").disabled = false;
+    }
+  });
+
+  // ---------- render ----------
+  function render(data) {
+    $("results").classList.remove("hidden");
+    $("summary").textContent = data.summary || "(no summary)";
+    renderTasks(data.tasks || [], data.roster || []);
+    renderNotes(data.notes || []);
+    renderTranscript(data.utterances || []);
+    $("timings").textContent = (data.timings || []).join("\n") || "(no stage logs captured)";
+  }
+
+  function renderTasks(tasks, roster) {
+    const container = $("tasks");
+    container.innerHTML = "";
+    const byPerson = {};
+    for (const t of tasks) {
+      (byPerson[t.assignee] = byPerson[t.assignee] || []).push(t);
+    }
+    const everyone = Array.from(new Set([...Object.keys(byPerson), ...roster]));
+    if (!everyone.length) {
+      container.innerHTML = `<div class="muted">(no roster or tasks)</div>`;
+      return;
+    }
+    for (const name of everyone) {
+      const section = document.createElement("div");
+      section.className = "person";
+      const header = document.createElement("h3");
+      header.textContent = name;
+      const ttsBtn = document.createElement("button");
+      ttsBtn.type = "button";
+      ttsBtn.className = "ghost";
+      ttsBtn.textContent = "🔊 read my tasks";
+      ttsBtn.addEventListener("click", () => readTasks(byPerson[name] || [], name, ttsBtn));
+      header.appendChild(ttsBtn);
+      section.appendChild(header);
+      const items = byPerson[name] || [];
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "muted";
+        empty.textContent = "(no tasks)";
+        section.appendChild(empty);
+      } else {
+        for (const task of items) section.appendChild(renderTask(task));
+      }
+      container.appendChild(section);
+    }
+  }
+
+  function renderTask(task) {
+    const row = document.createElement("div");
+    row.className = "task";
+    const text = document.createElement("div");
+    const deadline = task.deadline ? ` <span class="muted">(${esc(task.deadline)})</span>` : "";
+    text.innerHTML = [
+      `<strong>${esc(task.task)}</strong>${deadline}`,
+      `<div class="muted">assigned by ${esc(task.assigned_by)}</div>`,
+      `<div class="muted">“${esc(task.source_quote)}”</div>`,
+    ].join("");
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "ghost";
+    editBtn.textContent = "edit";
+    editBtn.addEventListener("click", () => inlineEdit(row, task));
+    row.appendChild(text);
+    row.appendChild(editBtn);
+    return row;
+  }
+
+  function inlineEdit(row, task) {
+    row.innerHTML = "";
+    const form = document.createElement("div");
+    form.className = "edit-form";
+    form.style.gridColumn = "1 / -1";
+    form.innerHTML = `
+      <label>Task <input type="text" value="${esc(task.task)}" data-field="task"></label>
+      <label>Assignee <input type="text" value="${esc(task.assignee)}" data-field="assignee"></label>
+      <label>Deadline <input type="text" value="${esc(task.deadline || "")}" data-field="deadline"></label>
+    `;
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "save";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "ghost";
+    cancelBtn.textContent = "cancel";
+    actions.append(saveBtn, cancelBtn);
+    form.appendChild(actions);
+    row.appendChild(form);
+
+    cancelBtn.addEventListener("click", () => render(lastResult));
+
+    saveBtn.addEventListener("click", async () => {
+      saveBtn.disabled = true;
+      const after = { ...task };
+      form.querySelectorAll("input[data-field]").forEach((inp) => {
+        after[inp.dataset.field] = inp.value || null;
+      });
+      const payload = {
+        team_id: $("teamId").value || "default",
+        before: task,
+        after,
+        source_quote: task.source_quote,
+      };
+      try {
+        const r = await fetch("/correct_task", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+        Object.assign(task, after);
+        render(lastResult);
+        $("status").textContent = "Correction saved. Re-process to apply.";
+      } catch (err) {
+        setError(`Save failed: ${err.message}`);
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+  }
+
+  function renderNotes(notes) {
+    const container = $("notes");
+    container.innerHTML = "";
+    if (!notes.length) {
+      container.innerHTML = `<div class="muted">(no notes)</div>`;
+      return;
+    }
+    for (const note of notes) {
+      const div = document.createElement("div");
+      const points = (note.points || []).map((p) => `<li>${esc(p)}</li>`).join("");
+      div.innerHTML = `<strong>${esc(note.topic)}</strong><ul>${points}</ul>`;
+      container.appendChild(div);
+    }
+  }
+
+  function renderTranscript(utts) {
+    $("transcript").textContent = utts
+      .map((u) => `[${u.start.toFixed(1)}s] ${u.speaker}: ${u.text}`)
+      .join("\n");
+  }
+
+  async function readTasks(tasks, name, btn) {
+    if (!tasks.length) {
+      $("status").textContent = `${name} has no tasks.`;
+      return;
+    }
+    const sentences = tasks.map((t, i) => {
+      const when = t.deadline ? `, by ${t.deadline}` : "";
+      return `Task ${i + 1}: ${t.task}${when}.`;
+    });
+    const plural = tasks.length === 1 ? "task" : "tasks";
+    const text = `${name}, you have ${tasks.length} ${plural}. ${sentences.join(" ")}`;
+    btn.disabled = true;
+    try {
+      const r = await fetch("/tts", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => URL.revokeObjectURL(url);
+      await audio.play();
+    } catch (err) {
+      setError(`TTS failed: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function esc(s) {
+    if (s == null) return "";
+    return String(s).replace(/[&<>"']/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+    ));
+  }
+  function setError(msg) { $("status").innerHTML = `<span class="err">${esc(msg)}</span>`; }
+})();
+</script>
+</body>
+</html>
