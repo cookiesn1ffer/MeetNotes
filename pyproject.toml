@@ -1,0 +1,33 @@
+[project]
+name = "meetnotes"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",  # correction/glossary API endpoints
+    "uvicorn>=0.30",   # ASGI server for the FastAPI app
+]
+
+[project.optional-dependencies]
+# Optional: enables ECAPA voice-embedding speaker ID in app/speakers.py.
+# Not required for tests; the transcript fallback runs without them.
+embeddings = [
+    "speechbrain>=1.0",  # pretrained ECAPA-TDNN speaker encoder
+    "torchaudio>=2.0",   # audio loading for the embedder
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",  # test runner
+    "ruff>=0.6",  # linter
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's idiomatic Depends(...) default triggers B008; it's the recommended pattern.
+"app/api/*.py" = ["B008"]

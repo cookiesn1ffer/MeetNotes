@@ -1,0 +1,13 @@
+.env
+.cache/
+.venv/
+__pycache__/
+*.db
+*.sqlite
+
+# additional
+*.pyc
+.pytest_cache/
+.ruff_cache/
+eval/audio/*
+!eval/audio/.gitkeep
