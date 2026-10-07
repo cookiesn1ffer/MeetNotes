@@ -24,7 +24,7 @@ from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from app.speakers import Roster
+from app.speakers import Embedder, Roster, ecapa_embedder
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +47,27 @@ CREATE TABLE IF NOT EXISTS glossary (
     created_at TEXT NOT NULL,
     PRIMARY KEY (team_id, term)
 );
+CREATE TABLE IF NOT EXISTS speaker_embeddings (
+    team_id    TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    count      INTEGER NOT NULL,
+    embedding  TEXT NOT NULL,       -- JSON array of floats (running mean)
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, name)
+);
 """
+
+
+_default_ecapa_embedder: Embedder | None = None
+
+
+def _load_default_embedder() -> Embedder:
+    """Lazy-load the ECAPA embedder on first use. Raises if speechbrain is missing."""
+    global _default_ecapa_embedder
+    if _default_ecapa_embedder is None:
+        turn, _ = ecapa_embedder()
+        _default_ecapa_embedder = turn
+    return _default_ecapa_embedder
 
 
 def _now() -> str:
@@ -168,16 +188,80 @@ class FeedbackStore:
         before_label: str,
         after_name: str,
         clip_path: Path | None = None,
+        *,
+        embedding: list[float] | None = None,
+        audio: Path | None = None,
+        start: float | None = None,
+        end: float | None = None,
+        embedder: Embedder | None = None,
     ) -> int:
-        return self._insert_correction(
+        """Record a speaker correction and update that name's running-mean embedding.
+
+        Supplying `embedding` uses it directly. Otherwise, if `audio/start/end` are
+        given, the embedding is computed via `embedder` (defaults to lazy-loaded
+        ECAPA on CPU). `clip_path`, if given, is persisted in the audit row only.
+        A correction with no embedding source still records the audit row.
+        """
+        row_id = self._insert_correction(
             team_id,
             "speaker",
             before_label,
             after_name,
             str(clip_path) if clip_path else "",
         )
+        vec: list[float] | None = embedding
+        if vec is None and audio is not None and start is not None and end is not None:
+            emb = embedder or _load_default_embedder()
+            vec = emb(Path(audio), start, end)
+        if vec is not None:
+            self._update_speaker_mean(team_id, after_name, vec)
+        return row_id
+
+    def _update_speaker_mean(self, team_id: str, name: str, v: list[float]) -> None:
+        """Fold `v` into the running mean for (team_id, name)."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT count, embedding FROM speaker_embeddings WHERE team_id=? AND name=?",
+                (team_id, name),
+            ).fetchone()
+            if row is None or len(json.loads(row["embedding"])) != len(v):
+                # First sample for this name, or a dimension change (embedder swapped):
+                # restart the mean from this vector.
+                new_count = 1
+                new_mean = list(v)
+            else:
+                n = row["count"]
+                prev = json.loads(row["embedding"])
+                new_count = n + 1
+                new_mean = [
+                    m + (x - m) / new_count for m, x in zip(prev, v, strict=True)
+                ]
+            c.execute(
+                "INSERT INTO speaker_embeddings(team_id, name, count, embedding, updated_at) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(team_id, name) DO UPDATE SET "
+                "count=excluded.count, embedding=excluded.embedding, updated_at=excluded.updated_at",
+                (team_id, name, new_count, json.dumps(new_mean), _now()),
+            )
+
+    def get_speaker_embedding(self, team_id: str, name: str) -> list[float] | None:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT embedding FROM speaker_embeddings WHERE team_id=? AND name=?",
+                (team_id, name),
+            ).fetchone()
+        return json.loads(row["embedding"]) if row else None
+
+    def speaker_embeddings(self, team_id: str) -> dict[str, list[float]]:
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT name, embedding FROM speaker_embeddings WHERE team_id=?",
+                (team_id,),
+            ).fetchall()
+        return {r["name"]: json.loads(r["embedding"]) for r in rows}
 
     def enrollments_for(self, team_id: str, name: str) -> list[Path]:
+        """Clip paths recorded for `name` in the corrections audit table."""
         with self._conn() as c:
             rows = c.execute(
                 'SELECT context FROM corrections '
@@ -188,18 +272,23 @@ class FeedbackStore:
         return [Path(r["context"]) for r in rows]
 
     def build_roster(self, team_id: str, base: dict[str, list[Path]]) -> Roster:
-        """Merge `base` enrollments with every stored speaker-correction clip."""
-        merged = {name: list(paths) for name, paths in base.items()}
+        """Merge `base` enrollments with every stored speaker correction.
+
+        Returns a Roster carrying both enrollment file paths (clip-based, for the
+        resolver's path-embedding fallback) and precomputed running-mean embeddings
+        (preferred when present).
+        """
+        merged_paths = {name: list(paths) for name, paths in base.items()}
         with self._conn() as c:
-            rows = c.execute(
+            correction_rows = c.execute(
                 'SELECT DISTINCT "after" FROM corrections WHERE team_id=? AND kind=?',
                 (team_id, "speaker"),
             ).fetchall()
-        for row in rows:
+        for row in correction_rows:
             name = row["after"]
-            merged.setdefault(name, [])
-            merged[name].extend(self.enrollments_for(team_id, name))
-        return Roster(merged)
+            merged_paths.setdefault(name, [])
+            merged_paths[name].extend(self.enrollments_for(team_id, name))
+        return Roster(merged_paths, self.speaker_embeddings(team_id))
 
 
 def pipeline_inputs(store: FeedbackStore, team_id: str, transcript: str) -> dict:

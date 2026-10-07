@@ -13,6 +13,12 @@
 - Prompt 5d — `FeedbackStore.retrieve_examples(team_id, transcript, k=3)` using sklearn
   `TfidfVectorizer` + `cosine_similarity`; `extract.py` prompt now formats few-shot
   examples as `wrong output -> corrected output`
+- Prompt 5e — `correct_speaker` now computes an ECAPA embedding from the utterance audio
+  span (speechbrain, CPU) and folds it into a running mean per `(team_id, name)` stored
+  in a new `speaker_embeddings` table; `Roster.embeddings` carries precomputed means and
+  wins over file-based enrollments in `_by_embedding`; speaker-match threshold now reads
+  `VOICE_MATCH_THRESHOLD` from config; `scripts/learning_demo.py` runs the before/after
+  comparison and prints both numbers
 - Deferred gaps closed:
   - `extract.py` now dispatches by `LLM_PROVIDER` env (gemini|anthropic, default gemini);
     `_call_gemini` added alongside `_call_claude`
@@ -28,4 +34,4 @@
 - 9 demo script
 
 ## Failing tests
-- none (59/59 pass; ruff clean)
+- none (71/71 pass; ruff clean)

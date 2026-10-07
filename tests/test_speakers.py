@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.models import Utterance
 from app.speakers import Roster, _by_transcript, resolve
 
@@ -155,3 +157,61 @@ def test_by_transcript_is_idempotent():
     first = _by_transcript(utts, ["Aarush"], {})
     second = _by_transcript(utts, ["Aarush"], first)
     assert first == second == {"speaker_0": "Aarush"}
+
+
+# ---------------------------------------------------------------- Roster.embeddings precedence
+
+
+def test_resolver_uses_precomputed_embeddings_without_embed_sample(tmp_path):
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"fake")
+
+    def embed_turn(a: Path, s: float, e: float) -> list[float]:
+        return [1.0, 0.0]
+
+    # No clips, no embed_sample needed: precomputed voice vector drives the match.
+    roster = Roster(embeddings={"Aarush": [1.0, 0.0]})
+    utts = [u("speaker_0", 0.0, 2.0, "chalo start")]
+    got = resolve(utts, roster, audio=audio, threshold=0.9, embed_turn=embed_turn)
+    assert got[0].speaker == "Aarush"
+
+
+def test_precomputed_embedding_wins_over_file_based_enrollment(tmp_path):
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"fake")
+    enroll = tmp_path / "e.wav"
+    enroll.write_bytes(b"fake")
+
+    def embed_turn(a: Path, s: float, e: float) -> list[float]:
+        return [1.0, 0.0]
+
+    def embed_sample(p: Path) -> list[float]:
+        pytest.fail("embed_sample should not be called when Roster.embeddings has the name")
+        return [0.0, 1.0]
+
+    roster = Roster({"Aarush": [enroll]}, {"Aarush": [1.0, 0.0]})
+    utts = [u("speaker_0", 0.0, 2.0, "chalo")]
+    got = resolve(
+        utts, roster, audio=audio, threshold=0.9,
+        embed_turn=embed_turn, embed_sample=embed_sample,
+    )
+    assert got[0].speaker == "Aarush"
+
+
+def test_resolve_default_threshold_comes_from_config(tmp_path, monkeypatch):
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"fake")
+    monkeypatch.setenv("VOICE_MATCH_THRESHOLD", "0.99")
+
+    def embed_turn(a: Path, s: float, e: float) -> list[float]:
+        return [1.0, 0.0]
+
+    # Cosine([1,0], [0.9,0.1]) ~ 0.994 -> above 0.99 default -> match.
+    roster = Roster(embeddings={"Aarush": [0.9, 0.1]})
+    got = resolve([u("speaker_0", 0, 2, "x")], roster, audio=audio, embed_turn=embed_turn)
+    assert got[0].speaker == "Aarush"
+
+    # Raise the bar above the achievable similarity -> no match.
+    monkeypatch.setenv("VOICE_MATCH_THRESHOLD", "0.999")
+    got = resolve([u("speaker_0", 0, 2, "x")], roster, audio=audio, embed_turn=embed_turn)
+    assert got[0].speaker == "Unknown 1"

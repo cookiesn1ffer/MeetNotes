@@ -33,3 +33,9 @@ def get_anthropic_key() -> str:
 
 def get_gemini_key() -> str:
     return _require("GEMINI_API_KEY")
+
+
+def get_voice_threshold() -> float:
+    """Cosine-similarity threshold for speaker embedding match. Env: VOICE_MATCH_THRESHOLD."""
+    load_env()
+    return float(os.environ.get("VOICE_MATCH_THRESHOLD", "0.5"))

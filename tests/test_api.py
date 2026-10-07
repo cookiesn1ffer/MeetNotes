@@ -52,6 +52,37 @@ def test_correct_speaker_endpoint_without_clip(client):
     assert store.enrollments_for("default", "Aarush") == []
 
 
+def test_correct_speaker_endpoint_with_embedding(client):
+    r = client.post(
+        "/correct_speaker",
+        json={"before": "speaker_0", "after": "Aarush", "embedding": [0.5, 0.5]},
+    )
+    assert r.status_code == 200
+    store = client.app.state.store
+    assert store.get_speaker_embedding("default", "Aarush") == [0.5, 0.5]
+
+
+def test_correct_speaker_endpoint_with_audio_span(client, tmp_path, monkeypatch):
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"x")
+
+    def fake_ecapa(cache_dir=None):
+        return (lambda path, start, end: [0.1, 0.9]), (lambda path: [0.1, 0.9])
+
+    monkeypatch.setattr("app.feedback.ecapa_embedder", fake_ecapa)
+    monkeypatch.setattr("app.feedback._default_ecapa_embedder", None)
+    r = client.post(
+        "/correct_speaker",
+        json={
+            "before": "speaker_0", "after": "Aarush",
+            "audio_path": str(audio), "start": 0.0, "end": 2.0,
+        },
+    )
+    assert r.status_code == 200
+    store = client.app.state.store
+    assert store.get_speaker_embedding("default", "Aarush") == [0.1, 0.9]
+
+
 def test_add_glossary_term_endpoint(client):
     r = client.post("/glossary", json={"term": "OKR", "kind": "acronym"})
     assert r.status_code == 200

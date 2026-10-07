@@ -28,7 +28,15 @@ class SpeakerCorrectionIn(BaseModel):
     before: str = Field(..., description="Original diarization label, e.g. 'speaker_0'.")
     after: str = Field(..., description="Corrected speaker name.")
     clip_path: str | None = Field(
-        None, description="Path to an enrollment clip extracted from the meeting audio."
+        None, description="Audit-only path to the enrollment clip; not used for voice ID."
+    )
+    audio_path: str | None = Field(
+        None, description="Path to the meeting audio; required with start+end to learn voice."
+    )
+    start: float | None = Field(None, description="Start seconds of the utterance span.")
+    end: float | None = Field(None, description="End seconds of the utterance span.")
+    embedding: list[float] | None = Field(
+        None, description="Precomputed voice embedding; overrides audio_path+start+end."
     )
 
 
@@ -59,6 +67,10 @@ def create_app(store: FeedbackStore | None = None) -> FastAPI:
             body.before,
             body.after,
             Path(body.clip_path) if body.clip_path else None,
+            embedding=body.embedding,
+            audio=Path(body.audio_path) if body.audio_path else None,
+            start=body.start,
+            end=body.end,
         )
         return {"id": row_id}
 

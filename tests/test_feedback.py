@@ -123,22 +123,12 @@ def test_build_roster_adds_new_names(store, tmp_path):
 
 
 def test_resolver_scores_better_after_three_speaker_corrections(store, tmp_path):
-    """Same utterances, same embedder: 0/N before, N/N after 3 enrollment corrections."""
+    """Three simulated corrections' embeddings average to the query, so after is 1.0."""
     audio = tmp_path / "meeting.wav"
     audio.write_bytes(b"fake")
-    clips = [tmp_path / f"c{i}.wav" for i in range(3)]
-    for p in clips:
-        p.write_bytes(b"fake")
 
     query = [0.9, 0.1]
-    enrollment_vectors = {
-        clips[0]: [0.6, 0.4],
-        clips[1]: [1.0, 0.0],
-        clips[2]: [1.1, -0.1],
-    }
-
-    def embed_sample(p: Path) -> list[float]:
-        return enrollment_vectors[p]
+    sample_vecs = [[0.6, 0.4], [1.0, 0.0], [1.1, -0.1]]  # mean = query
 
     def embed_turn(a: Path, s: float, e: float) -> list[float]:
         return query
@@ -150,23 +140,81 @@ def test_resolver_scores_better_after_three_speaker_corrections(store, tmp_path)
 
     def accuracy(roster: Roster) -> float:
         out = resolve(
-            utterances,
-            roster,
-            audio=audio,
-            threshold=0.9,
-            embed_turn=embed_turn,
-            embed_sample=embed_sample,
+            utterances, roster, audio=audio, threshold=0.9, embed_turn=embed_turn
         )
         return sum(1 for u in out if u.speaker == "Aarush") / len(out)
 
     before = accuracy(Roster({"Aarush": []}))
-    for i, clip in enumerate(clips):
-        store.correct_speaker("default", "speaker_0", "Aarush", clip)
+    for v in sample_vecs:
+        store.correct_speaker("default", "speaker_0", "Aarush", embedding=v)
     after = accuracy(store.build_roster("default", {"Aarush": []}))
 
     assert before == 0.0
     assert after == 1.0
-    assert after > before
+    assert after >= before
+
+
+# ---------------------------------------------------------------- embedding-based correct_speaker
+
+
+def test_correct_speaker_with_embedding_stores_running_mean(store):
+    store.correct_speaker("t", "s0", "Aarush", embedding=[1.0, 0.0, 0.0])
+    store.correct_speaker("t", "s0", "Aarush", embedding=[3.0, 0.0, 0.0])
+    mean = store.get_speaker_embedding("t", "Aarush")
+    assert mean == [2.0, 0.0, 0.0]
+
+
+def test_correct_speaker_running_mean_is_online(store):
+    # Online mean must equal the batch mean across any order.
+    vecs = [[1.0, 0.0], [2.0, 1.0], [3.0, -1.0], [0.0, 2.0]]
+    for v in vecs:
+        store.correct_speaker("t", "s0", "A", embedding=v)
+    mean = store.get_speaker_embedding("t", "A")
+    expected = [sum(v[i] for v in vecs) / len(vecs) for i in range(len(vecs[0]))]
+    assert mean == pytest.approx(expected)
+
+
+def test_correct_speaker_computes_embedding_from_audio_span(store, tmp_path):
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"x")
+    calls: list[tuple] = []
+
+    def fake_embedder(path: Path, start: float, end: float) -> list[float]:
+        calls.append((path, start, end))
+        return [0.5, 0.5]
+
+    store.correct_speaker(
+        "t", "s0", "Aarush", audio=audio, start=0.5, end=2.0, embedder=fake_embedder
+    )
+    assert calls == [(audio, 0.5, 2.0)]
+    assert store.get_speaker_embedding("t", "Aarush") == [0.5, 0.5]
+
+
+def test_correct_speaker_without_embedding_still_records_audit_row(store):
+    store.correct_speaker("t", "s0", "Aarush")
+    assert store.get_speaker_embedding("t", "Aarush") is None
+    assert "Aarush" in store.build_roster("t", {}).enrollments
+
+
+def test_correct_speaker_dimension_mismatch_restarts_mean(store):
+    store.correct_speaker("t", "s0", "A", embedding=[1.0, 0.0])
+    store.correct_speaker("t", "s0", "A", embedding=[0.5, 0.5, 0.5])  # different dim
+    # Dim change replaces the stored mean rather than crashing.
+    assert store.get_speaker_embedding("t", "A") == [0.5, 0.5, 0.5]
+
+
+def test_build_roster_populates_embeddings_from_store(store):
+    store.correct_speaker("t", "s0", "Aarush", embedding=[1.0, 0.0])
+    store.correct_speaker("t", "s1", "Priya", embedding=[0.0, 1.0])
+    roster = store.build_roster("t", {})
+    assert roster.embeddings == {"Aarush": [1.0, 0.0], "Priya": [0.0, 1.0]}
+
+
+def test_speaker_embeddings_scoped_by_team(store):
+    store.correct_speaker("teamA", "s0", "A", embedding=[1.0, 0.0])
+    store.correct_speaker("teamB", "s0", "A", embedding=[0.0, 1.0])
+    assert store.get_speaker_embedding("teamA", "A") == [1.0, 0.0]
+    assert store.get_speaker_embedding("teamB", "A") == [0.0, 1.0]
 
 
 # ---------------------------------------------------------------- pipeline_inputs convenience

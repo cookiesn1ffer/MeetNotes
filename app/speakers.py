@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.config import get_voice_threshold
 from app.models import Utterance
 
 log = logging.getLogger(__name__)
@@ -26,18 +27,25 @@ Embedder = Callable[[Path, float, float], list[float]]  # (audio, start, end) ->
 EnrollEmbedder = Callable[[Path], list[float]]  # enrollment clip -> vector
 
 MIN_TURN_S = 0.5  # too short to embed reliably
-DEFAULT_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)
 class Roster:
-    """Names to attribute, with optional enrolled audio samples per name."""
+    """Names to attribute. Two parallel enrollment stores per name:
+        enrollments: file paths that will be re-embedded on each resolve() call
+        embeddings:  precomputed voice vectors (e.g. running averages from feedback)
+
+    Precomputed `embeddings` take precedence; `enrollments` are only used for names
+    that have no precomputed vector. Either can be empty.
+    """
 
     enrollments: dict[str, list[Path]] = field(default_factory=dict)
+    embeddings: dict[str, list[float]] = field(default_factory=dict)
 
     @property
     def names(self) -> list[str]:
-        return list(self.enrollments.keys())
+        """Union of both enrolment sources."""
+        return list({**self.enrollments, **self.embeddings}.keys())
 
 
 # ---------------------------------------------------------------- helpers
@@ -72,14 +80,19 @@ def _by_embedding(
     roster: Roster,
     audio: Path,
     embed_turn: Embedder,
-    embed_sample: EnrollEmbedder,
+    embed_sample: EnrollEmbedder | None,
     threshold: float,
 ) -> dict[str, str]:
-    enrolled: dict[str, list[float]] = {}
-    for name, paths in roster.enrollments.items():
-        vecs = [embed_sample(p) for p in paths if p.is_file()]
-        if vecs:
-            enrolled[name] = _weighted_mean([(v, 1.0) for v in vecs])
+    # Precomputed means (e.g. running averages from stored corrections) win.
+    enrolled: dict[str, list[float]] = dict(roster.embeddings)
+    # Fall back to re-embedding enrollment files only for names without a precomputed vector.
+    if embed_sample is not None:
+        for name, paths in roster.enrollments.items():
+            if name in enrolled or not paths:
+                continue
+            vecs = [embed_sample(p) for p in paths if p.is_file()]
+            if vecs:
+                enrolled[name] = _weighted_mean([(v, 1.0) for v in vecs])
     if not enrolled:
         return {}
 
@@ -190,21 +203,25 @@ def resolve(
     roster: Roster,
     *,
     audio: Path | None = None,
-    threshold: float = DEFAULT_THRESHOLD,
+    threshold: float | None = None,
     embed_turn: Embedder | None = None,
     embed_sample: EnrollEmbedder | None = None,
 ) -> list[Utterance]:
-    """Return new utterances with `speaker` set to a roster name or 'Unknown N'."""
+    """Return new utterances with `speaker` set to a roster name or 'Unknown N'.
+
+    Threshold defaults to `app.config.get_voice_threshold()` (env VOICE_MATCH_THRESHOLD).
+    The embedding pass runs when audio + an embed_turn are given AND the roster carries
+    either precomputed `embeddings` or re-embeddable `enrollments` (needs embed_sample).
+    """
     t0 = time.perf_counter()
+    thr = get_voice_threshold() if threshold is None else threshold
     label_to_name: dict[str, str] = {}
-    if (
-        audio is not None
-        and roster.enrollments
-        and embed_turn is not None
-        and embed_sample is not None
-    ):
+    has_any_enrollment = bool(roster.embeddings) or any(
+        paths for paths in roster.enrollments.values()
+    )
+    if audio is not None and has_any_enrollment and embed_turn is not None:
         label_to_name = _by_embedding(
-            utterances, roster, audio, embed_turn, embed_sample, threshold
+            utterances, roster, audio, embed_turn, embed_sample, thr
         )
     label_to_name = _by_transcript(utterances, roster.names, label_to_name)
     label_to_name = _fill_unknowns(utterances, label_to_name)
