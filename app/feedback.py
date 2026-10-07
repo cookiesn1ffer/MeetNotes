@@ -217,6 +217,20 @@ class FeedbackStore:
             self._update_speaker_mean(team_id, after_name, vec)
         return row_id
 
+    def embed_span(
+        self, audio: Path, start: float, end: float, embedder: Embedder | None = None
+    ) -> list[float] | None:
+        """Embed an audio span, or return None (with a logged reason) if that isn't possible.
+
+        Embedding needs the optional speechbrain/torchaudio deps and a decodable file, so
+        callers that must still record a correction use this instead of raising.
+        """
+        try:
+            return (embedder or _load_default_embedder())(Path(audio), start, end)
+        except Exception as exc:  # noqa: BLE001 - any embedder/decoder failure just means "no voice"
+            log.warning("voice embedding skipped: %s", exc)
+            return None
+
     def _update_speaker_mean(self, team_id: str, name: str, v: list[float]) -> None:
         """Fold `v` into the running mean for (team_id, name)."""
         with self._conn() as c:

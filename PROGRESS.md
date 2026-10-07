@@ -56,6 +56,19 @@
   (no traceback) on missing file, missing API key, or network failure. Closes
   loose ends "no CLI orchestrator" and "pipeline_inputs has no caller".
 
+- Prompt 11 — Manus UI (`ui/`, Vite, vanilla JS) integrated with the backend. `ui/` was
+  flat, so it was restructured into `src/` + `public/` and built to `ui/dist` (committed so
+  `uv run python -m app serve` needs no node). Backend: `serve` command (opens the browser;
+  `--no-open` to skip), `ui/dist` mounted at `/` (old page stays as fallback), CORS for
+  localhost origins, `/tts` accepts `{text, voice?}` and returns audio bytes (key stays
+  server-side), clean one-line JSON errors (503 missing key, 502 upstream/network).
+  `/process` now also returns `people` (per-person notes + tasks, plus a "Meeting" card),
+  `transcript` (speaker, language, mm:ss), `stage_timings`, `confidence`, `run_id`; uploads
+  are kept under `data/uploads/<run_id>.*` so `/correct_speaker` (`run_id` + start/end) can
+  learn a voice. Extract notes gained an optional `person`. UI: demo/mock mode and fixtures
+  removed; `api.js` maps exactly to the backend shapes. 15 contract tests in
+  `tests/test_ui_contract.py`.
+
 ## In progress
 - (none)
 
@@ -63,10 +76,13 @@
 - (none scheduled — open to the next prompt)
 
 ## Loose ends
+- UI flow not yet clicked through in a real browser (only served + API/JS error paths checked).
+- Glossary chips are not reloaded from the backend after a page refresh (no GET /glossary).
+- `ui/SKILL.md` and the two VoiceRoom `.md` files from Manus are left untracked.
 - CI has been committed but hasn't actually run on this repo yet — first push to
   GitHub will exercise the Ubuntu + Windows matrix.
 - `eval/audio/` and `eval/truth/` are empty, so `bench/results.md` and the
   README table are template-only.
 
 ## Failing tests
-- none (108/108 pass; ruff clean)
+- none (123/123 pass; ruff clean)

@@ -102,7 +102,8 @@ def test_add_glossary_term_endpoint_team_scoping(client):
 # ---------------------------------------------------------------- UI + pipeline + TTS
 
 
-def test_index_route_serves_html(client):
+def test_index_route_serves_fallback_html_without_built_ui(tmp_path):
+    client = TestClient(create_app(FeedbackStore(tmp_path / "fb.db"), ui_dir=tmp_path / "no-ui"))
     r = client.get("/")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")

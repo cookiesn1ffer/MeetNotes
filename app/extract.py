@@ -55,6 +55,7 @@ SCHEMA = {
                 "properties": {
                     "topic": {"type": "string"},
                     "points": {"type": "array", "items": {"type": "string"}},
+                    "person": {"type": ["string", "null"]},
                 },
             },
         },
@@ -100,6 +101,8 @@ Hard rules:
   * `confidence` is in [0, 1]; use low values when the command is ambiguous.
 - Ignore chit-chat, factual asides, questions, and anything that isn't a command/assignment.
 - Group notes by topic. Keep topic names short.
+- A note's optional `person` is the roster name the note is mainly about (e.g. what that
+  person reported or committed to); omit it or use null for meeting-wide notes.
 """
 
 

@@ -2,6 +2,7 @@
 
 Commands:
     process <audio> --team T --roster "A,B,C" [--json] [--db PATH]
+    serve [--host H] [--port N] [--db PATH] [--no-open]
 
 Prints a per-person task list + notes + stage timings by default; `--json` dumps
 the MeetingResult as JSON instead. Exits 1 with a one-line error message (no
@@ -11,7 +12,9 @@ traceback) on missing file, missing API key, or network failure.
 import argparse
 import json
 import sys
+import threading
 import urllib.error
+import webbrowser
 from pathlib import Path
 
 from app.feedback import FeedbackStore
@@ -31,6 +34,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--roster", default="", help='comma-separated roster, e.g. "Aarush, Kaushal"')
     p.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"feedback DB (default: {DEFAULT_DB})")
     p.add_argument("--json", action="store_true", help="emit the MeetingResult as JSON")
+    s = sub.add_parser("serve", help="serve the web UI + API (one command for the demo)")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8000)
+    s.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"feedback DB (default: {DEFAULT_DB})")
+    s.add_argument("--no-open", action="store_true", help="don't open the browser")
     return parser
 
 
@@ -38,7 +46,32 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.cmd == "process":
         return _cmd_process(args)
+    if args.cmd == "serve":
+        return _cmd_serve(args)
     return 0  # unreachable: argparse enforces required=True
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    import uvicorn  # imported here so `process` doesn't pay the server import cost
+
+    from app.api.main import DEFAULT_UI_DIST, create_app
+
+    if not (DEFAULT_UI_DIST / "index.html").is_file():
+        print(
+            f"warning: no built UI at {DEFAULT_UI_DIST} (run `pnpm install && pnpm build` in ui/); "
+            "serving the minimal fallback page",
+            file=sys.stderr,
+        )
+    url = f"http://{args.host}:{args.port}"
+    if not args.no_open:
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    print(f"MeetNotes at {url}  (Ctrl+C to stop)")
+    try:
+        uvicorn.run(create_app(FeedbackStore(args.db)), host=args.host, port=args.port, log_level="info")
+    except OSError as exc:  # e.g. port already in use
+        print(f"error: cannot serve on {url}: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _cmd_process(args: argparse.Namespace) -> int:

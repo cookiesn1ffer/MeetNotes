@@ -161,7 +161,7 @@ _PASS thresholds: time-to-notes ≤ 0.25 × duration, speaker acc ≥ 90 %, task
 uv run pytest                    # tests
 uv run ruff check                # lint
 uv run python -m app.bench       # benchmark
-uv run uvicorn app.api.main:app  # web UI (http://127.0.0.1:8000)
+uv run python -m app serve       # web UI + API (http://127.0.0.1:8000)
 
 # scripts
 uv run python scripts/hinglish_check.py   # eval clips: PASS when a mixed-script transcript keeps both languages
