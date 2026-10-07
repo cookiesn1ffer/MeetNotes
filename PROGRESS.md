@@ -28,14 +28,18 @@
   (time-to-notes, STT time, LLM time, WER, time-weighted speaker accuracy,
   task precision + recall with assignee-exact + fuzzy-text matching) written to
   `bench/results.md`; PASS thresholds documented in the module header
+- Prompt 7 — `.github/workflows/ci.yml` (ubuntu-latest + windows-latest matrix,
+  `uv sync` + ruff + pytest + smoke test); `app/capture.py` with the AudioSource
+  interface (`FileSource`, `MicSource` with lazy sounddevice, `SystemAudioSource`
+  stub carrying Windows WASAPI loopback / Linux PipeWire monitor TODOs);
+  `tests/test_smoke_pipeline.py` for the mocked end-to-end run
 
 ## In progress
 - (none)
 
 ## Next
-- 7 CI (ubuntu-latest + windows-latest matrix) + audio capture
 - 8 UI
 - 9 demo script
 
 ## Failing tests
-- none (82/82 pass; ruff clean)
+- none (89/89 pass; ruff clean)
