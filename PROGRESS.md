@@ -40,12 +40,17 @@
   tasks" ElevenLabs TTS proxy at `/tts`. New `/process` endpoint runs the full
   pipeline on an uploaded clip (team-scoped glossary + corrections auto-wired)
   and returns summary/notes/tasks/utterances/roster/timings as JSON.
+- Prompt 9 — `README.md` (overview, ASCII pipeline, Linux + Windows setup, env
+  vars table, bench instructions + columns/thresholds, current table) and
+  `DEMO.md` (3-minute script: play clip -> per-person tasks -> correct task +
+  speaker -> re-run and show the fix persists -> bench + TTS readout, with
+  prep steps and fallbacks).
 
 ## In progress
 - (none)
 
 ## Next
-- 9 demo script
+- (none scheduled — open to the next prompt)
 
 ## Failing tests
 - none (97/97 pass; ruff clean)
