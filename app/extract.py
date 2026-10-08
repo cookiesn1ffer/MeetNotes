@@ -33,7 +33,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 DEFAULT_MODELS = {
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.5-flash",
     "anthropic": "claude-sonnet-5-5",
 }
 
